@@ -111,7 +111,19 @@ were placed before the failure was known.
 | [`allocation.py`](allocation.py) | MILP order allocation + post-commit `stress_test` |
 | [`data.py`](data.py) | Synthetic 6-supplier dataset + DEA input/output split |
 | [`app.py`](app.py) | Streamlit UI |
+| [`test_model.py`](test_model.py) | Smoke tests for the engine |
 | [`requirements.txt`](requirements.txt) | Dependencies |
+
+## Tests
+
+```bash
+python test_model.py     # plain runner, no extra dependency
+# or, if pytest is installed:
+python -m pytest
+```
+
+The tests check that DEA scores stay in (0, 1], allocations meet demand, the
+resilient plan diversifies, and resilience pays off under a disruption.
 
 ## Limitations
 
