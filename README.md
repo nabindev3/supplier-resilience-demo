@@ -4,6 +4,9 @@
 > analysis** — bridging a 2021 two-stage supply-chain model toward modern
 > supply-chain risk management.
 
+**▶ Live demo:** https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/ — no install needed.
+
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Streamlit](https://img.shields.io/badge/UI-Streamlit-red)
 ![Solver](https://img.shields.io/badge/solver-PuLP%20%2F%20CBC-green)
@@ -72,6 +75,10 @@ resilience trade-off is precisely what a static, deterministic model cannot
 surface.
 
 ## Quick start
+
+**Zero install:** open the [live demo](https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/).
+
+Or run it locally:
 
 ```bash
 git clone https://github.com/nabindev3/supplier-resilience-demo.git
