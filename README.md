@@ -74,7 +74,7 @@ surface.
 ## Quick start
 
 ```bash
-git clone https://github.com/<your-username>/supplier-resilience-demo.git
+git clone https://github.com/nabindev3/supplier-resilience-demo.git
 cd supplier-resilience-demo
 pip install -r requirements.txt
 streamlit run app.py
