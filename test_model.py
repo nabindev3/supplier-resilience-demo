@@ -8,6 +8,8 @@ Runnable two ways:
 from data import SUPPLIERS, DEFAULT_DEMAND, dea_arrays
 from dea import ccr_input_efficiency
 from allocation import allocate, stress_test
+from fcm import FCM
+from fcm_data import CONCEPTS, weight_matrix
 
 
 def _efficiency():
@@ -59,12 +61,42 @@ def test_resilience_pays_off_under_disruption():
     assert res_hit["realized_service_level"] > cost_hit["realized_service_level"]
 
 
+def test_fcm_converges_to_unit_interval():
+    """FCM iteration must settle and keep every activation in [0, 1]."""
+    fcm = FCM(CONCEPTS, weight_matrix())
+    final, traj = fcm.run(max_steps=100)
+    assert len(traj) < 101, "did not converge"
+    assert all(0.0 <= v <= 1.0 for v in final)
+
+
+def test_fcm_diversification_reduces_risk_raises_resilience():
+    """Activating 'Supplier diversification' should lower disruption risk and
+    raise resilience — the causal signs encoded in the map."""
+    fcm = FCM(CONCEPTS, weight_matrix())
+    sc = fcm.scenario("Supplier diversification")
+    assert sc["Disruption risk"][2] < 0      # delta negative
+    assert sc["Resilience"][2] > 0           # delta positive
+
+
+def test_nhl_preserves_structure_and_bounds():
+    """Hebbian learning adapts only existing links and stays within [-1, 1]."""
+    fcm = FCM(CONCEPTS, weight_matrix())
+    final, _ = fcm.run()
+    W2 = fcm.nhl_step(final)
+    W0 = weight_matrix()
+    assert (W2[W0 == 0] == 0).all()          # zero links stay zero
+    assert (abs(W2) <= 1.0).all()
+
+
 if __name__ == "__main__":
     tests = [
         test_dea_scores_in_unit_interval,
         test_allocation_meets_demand,
         test_resilient_plan_diversifies,
         test_resilience_pays_off_under_disruption,
+        test_fcm_converges_to_unit_interval,
+        test_fcm_diversification_reduces_risk_raises_resilience,
+        test_nhl_preserves_structure_and_bounds,
     ]
     for t in tests:
         t()

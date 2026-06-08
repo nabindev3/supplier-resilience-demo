@@ -1,3 +1,4 @@
 streamlit>=1.30
 pulp>=2.7
 pandas>=1.5
+numpy>=1.23
