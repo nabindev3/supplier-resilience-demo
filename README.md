@@ -1,8 +1,9 @@
 # Supplier Selection, Order Allocation & Disruption Resilience
 
-> A DEA-driven supplier order-allocation model, extended with **disruption-resilience
-> analysis** — bridging a 2021 two-stage supply-chain model toward modern
-> supply-chain risk management.
+> A DEA-driven supplier order-allocation model with **disruption-resilience
+> analysis** and a **Fuzzy Cognitive Map** of resilience/sustainability enablers —
+> bridging a 2021 two-stage supply-chain model toward the FCM + hybrid-learning
+> methods in Dr. Yousefi's recent blockchain / sustainable-supply-chain research.
 
 **▶ Live demo:** https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/ — no install needed.
 
@@ -22,6 +23,7 @@ committed, how much does diversification cost, and how much service does it save
 ## Table of contents
 - [Background](#background)
 - [What it does](#what-it-does)
+- [Relation to Dr. Yousefi's research](#relation-to-dr-yousefis-research)
 - [Results](#results)
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
@@ -59,6 +61,33 @@ the missing **resilience** dimension.
 - **Disruption stress test** — commit a plan, *then* knock out a supplier; units
   committed above surviving capacity are lost. Compares a **cost-only** plan
   against a **resilient** plan on *realised* service level.
+- **Fuzzy Cognitive Map (FCM)** — a signed, weighted causal graph of resilience &
+  sustainability enablers (blockchain traceability, smart contracts, supplier
+  diversification → visibility → disruption risk → resilience → sustainability).
+  Iterating the sigmoid update rule simulates how switching one enabler "on"
+  propagates through the system and re-settles every other concept, with a
+  Nonlinear Hebbian Learning step for weight adaptation.
+
+## Relation to Dr. Yousefi's research
+
+This project is built directly on the methodological toolkit in Dr. Samuel
+Yousefi's work, so each component maps to a concept from his papers:
+
+| This repo | Concept | Source in his work |
+|-----------|---------|--------------------|
+| `dea.py` — CCR efficiency scoring | **Data Envelopment Analysis** to rank suppliers/enablers | Yousefi et al. (2021), *Oper. Res.* 21(1); also used in the 2022 FCM paper below |
+| `allocation.py` — DEA-aware order allocation | **Supplier selection & order allocation** (Stage 1) | Yousefi, Jahangoshai Rezaee & Solimanpur (2021) |
+| `allocation.py` — resilience levers + `stress_test` | **Disruption-risk / resilience** extension | the gap left open by the 2021 deterministic model; his current research agenda |
+| `fcm.py` — causal graph + sigmoid state propagation | **Fuzzy Cognitive Maps** of enablers → performance targets | Yousefi & Mohamadpour Tosarkani (2022), *IJPE* 246; *Eng. Appl. of AI* (2024) |
+| `fcm.py` — `run()` iterating to a fixed point | **System dynamics / state transitions over time** | the FCM simulation step in the 2022/2024 papers |
+| `fcm.py` — `nhl_step()` Nonlinear Hebbian Learning | a building block of the **hybrid learning algorithm** he uses to tune FCM weights | Yousefi & Mohamadpour Tosarkani (2022); *Eng. Appl. of AI* (2024) |
+
+**Honest scope:** the FCM weights here are expert-defined illustrative values, not
+learned from data, and `nhl_step()` is a single Hebbian rule rather than his full
+hybrid (Hebbian + evolutionary) algorithm. The aim is to demonstrate fluency with
+the *methods* — DEA, FCM, causal state-propagation, Hebbian learning — and to show
+how they connect supplier allocation to the resilience and sustainability targets
+his recent work centres on.
 
 ## Results
 
@@ -110,6 +139,18 @@ cap, and a minimum-supplier-count constraint.
 = `Σ min(committed_j, surviving_capacity_j)` — no re-optimisation, because orders
 were placed before the failure was known.
 
+**FCM (Fuzzy Cognitive Map).** Concepts carry activations `A_i ∈ [0, 1]`; the
+state evolves by the standard sigmoid rule until it reaches a fixed point:
+
+```
+A_i(t+1) = f( A_i(t) + Σ_{j≠i} w_{j→i} · A_j(t) ),   f(x) = 1 / (1 + e^{-λx})
+```
+
+A *scenario* clamps one enabler "on" and re-runs to convergence, so its influence
+propagates through the signed weights to every downstream concept. `nhl_step()`
+applies a Nonlinear Hebbian Learning update, adapting only the existing causal
+links (preserving the expert-defined structure).
+
 ## Project layout
 
 | File | Role |
@@ -117,8 +158,10 @@ were placed before the failure was known.
 | [`dea.py`](dea.py) | Input-oriented CCR DEA efficiency (PuLP/CBC) |
 | [`allocation.py`](allocation.py) | MILP order allocation + post-commit `stress_test` |
 | [`data.py`](data.py) | Synthetic 6-supplier dataset + DEA input/output split |
-| [`app.py`](app.py) | Streamlit UI |
-| [`test_model.py`](test_model.py) | Smoke tests for the engine |
+| [`fcm.py`](fcm.py) | Fuzzy Cognitive Map engine: state propagation, scenarios, Hebbian learning |
+| [`fcm_data.py`](fcm_data.py) | Enabler/target concepts and signed causal weight matrix |
+| [`app.py`](app.py) | Streamlit UI (Allocation & Resilience tab + Causal Map tab) |
+| [`test_model.py`](test_model.py) | Smoke tests for the engine (allocation + FCM) |
 | [`requirements.txt`](requirements.txt) | Dependencies |
 
 ## Tests
@@ -130,7 +173,8 @@ python -m pytest
 ```
 
 The tests check that DEA scores stay in (0, 1], allocations meet demand, the
-resilient plan diversifies, and resilience pays off under a disruption.
+resilient plan diversifies, resilience pays off under a disruption, the FCM
+converges, its causal signs hold, and Hebbian learning stays well-behaved.
 
 ## Limitations
 
@@ -141,12 +185,22 @@ resilient plan diversifies, and resilience pays off under a disruption.
 - Single-period, single-supplier deterministic disruption. A natural next step is
   scenario-based / stochastic disruption or robust optimisation.
 - Supplier data is synthetic and illustrative.
+- FCM weights are expert-defined, not learned; `nhl_step()` is a single Hebbian
+  rule, not a full hybrid (Hebbian + evolutionary) learning algorithm.
 
-## Reference
+## References
 
 Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). Supplier selection
 and order allocation using two-stage hybrid supply chain model and game-based
 order price. *Operational Research, 21*(1), 553–588.
+
+Yousefi, S., & Mohamadpour Tosarkani, B. (2022). An analytical approach for
+evaluating the impact of blockchain technology on sustainable supply chain
+performance. *International Journal of Production Economics, 246*, 108429.
+
+Yousefi, S., & Mohamadpour Tosarkani, B. (2024). Enhancing sustainable supply
+chain readiness to adopt blockchain: A decision support approach for barriers
+analysis. *Engineering Applications of Artificial Intelligence.*
 
 ## License
 
