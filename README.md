@@ -11,6 +11,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Streamlit](https://img.shields.io/badge/UI-Streamlit-red)
 ![Solver](https://img.shields.io/badge/solver-PuLP%20%2F%20CBC-green)
+![Forecast](https://img.shields.io/badge/forecast-Prophet-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project reproduces the **DEA + order-allocation core** of Yousefi,
@@ -53,6 +54,10 @@ the missing **resilience** dimension.
 
 ## What it does
 
+- **Demand forecasting (Stage 1 front-end)** — a **Prophet** pipeline fit on 5
+  years of synthetic daily demand (trend + weekly & yearly seasonality + noise)
+  projects future demand, so order allocation sizes a *forecast* instead of a
+  hand-picked constant.
 - **DEA efficiency scoring** — input-oriented CCR model, one LP per supplier.
 - **Order allocation** — a MILP that meets demand at minimum purchasing cost, with
   an optional reward for routing orders to DEA-efficient suppliers.
@@ -75,6 +80,7 @@ Yousefi's work, so each component maps to a concept from his papers:
 
 | This repo | Concept | Source in his work |
 |-----------|---------|--------------------|
+| `forecast.py` — Prophet demand forecasting | **Predictive front-end to Stage 1** (the 2021 model takes demand as given) | optimises the demand input the 2021 allocation assumes fixed |
 | `dea.py` — CCR efficiency scoring | **Data Envelopment Analysis** to rank suppliers/enablers | Yousefi et al. (2021), *Oper. Res.* 21(1); also used in the 2022 FCM paper below |
 | `allocation.py` — DEA-aware order allocation | **Supplier selection & order allocation** (Stage 1) | Yousefi, Jahangoshai Rezaee & Solimanpur (2021) |
 | `allocation.py` — resilience levers + `stress_test` | **Disruption-risk / resilience** extension | the gap left open by the 2021 deterministic model; his current research agenda |
@@ -121,6 +127,19 @@ scenario live in the browser.
 
 ## How it works
 
+**Demand forecasting (Prophet).** `demand_data.py` synthesises 5 years of daily
+demand as a multiplicative model — compound growth trend × weekly cycle × yearly
+season × Gaussian noise — in Prophet's `(ds, y)` shape. `forecast.py` fits
+Prophet (linear growth, multiplicative weekly + yearly seasonality, 90%
+intervals) and collapses the forecast horizon into a single expected-demand
+figure (with a prediction-interval band) that feeds the allocator:
+
+```
+demand(t) = trend(t) · weekly(t) · yearly(t) · (1 + noise)
+yhat      = Prophet.fit(history).predict(horizon)
+demand_to_allocate = Σ yhat over the horizon
+```
+
 **DEA (CCR, input-oriented).** For each supplier (DMU) `o`:
 
 ```
@@ -155,9 +174,12 @@ links (preserving the expert-defined structure).
 
 | File | Role |
 |------|------|
+| [`demand_data.py`](demand_data.py) | Synthesises 5 years of daily demand (trend + seasonality + noise) in Prophet's `(ds, y)` shape |
+| [`forecast.py`](forecast.py) | Prophet forecasting pipeline → expected horizon demand for the allocator |
+| [`suppliers_config.py`](suppliers_config.py) | Static 10-supplier catalogue (capacity, unit/holding cost, defect rate, lead time) + DEA/allocation adapters |
 | [`dea.py`](dea.py) | Input-oriented CCR DEA efficiency (PuLP/CBC) |
 | [`allocation.py`](allocation.py) | MILP order allocation + post-commit `stress_test` |
-| [`data.py`](data.py) | Synthetic 6-supplier dataset + DEA input/output split |
+| [`data.py`](data.py) | Synthetic 6-supplier dataset + DEA input/output split (original 2021 case) |
 | [`fcm.py`](fcm.py) | Fuzzy Cognitive Map engine: state propagation, scenarios, Hebbian learning |
 | [`fcm_data.py`](fcm_data.py) | Enabler/target concepts and signed causal weight matrix |
 | [`app.py`](app.py) | Streamlit UI (Allocation & Resilience tab + Causal Map tab) |
@@ -184,7 +206,9 @@ converges, its causal signs hold, and Hebbian learning stays well-behaved.
   super-efficiency variant.
 - Single-period, single-supplier deterministic disruption. A natural next step is
   scenario-based / stochastic disruption or robust optimisation.
-- Supplier data is synthetic and illustrative.
+- Supplier and demand data are synthetic and illustrative; the Prophet forecast
+  is fit on the generated history, so it demonstrates the pipeline rather than
+  predicting a real series.
 - FCM weights are expert-defined, not learned; `nhl_step()` is a single Hebbian
   rule, not a full hybrid (Hebbian + evolutionary) learning algorithm.
 
