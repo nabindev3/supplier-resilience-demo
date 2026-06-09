@@ -26,7 +26,8 @@ from demand_data import load_demand_history
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
-DEFAULT_HORIZON = 90  # days to forecast (a quarter)
+DEFAULT_HORIZON = 90    # days to forecast (a quarter)
+ANNUAL_HORIZON = 365    # days to forecast (a full upcoming year)
 
 
 def build_model() -> Prophet:
@@ -90,6 +91,31 @@ def forecast_demand(horizon: int = DEFAULT_HORIZON) -> dict:
     """End-to-end convenience: history -> Prophet -> horizon demand summary."""
     _, forecast = fit_forecast(horizon=horizon)
     return horizon_demand(forecast, horizon)
+
+
+def annual_demand() -> dict:
+    """Predict the annual demand requirement `D` for the upcoming year.
+
+    Forecasts the next 365 days and extracts the point estimate `D` together
+    with the lower / upper bounds of Prophet's prediction interval, so the
+    optimiser can size orders to expected demand *and* stress-test against the
+    pessimistic and optimistic ends of the forecast uncertainty.
+
+    Returns:
+        D        expected annual demand (Σ yhat),
+        D_lower  pessimistic annual demand (Σ yhat_lower),
+        D_upper  optimistic annual demand (Σ yhat_upper),
+        plus the mean daily rate and horizon length.
+    """
+    _, forecast = fit_forecast(horizon=ANNUAL_HORIZON)
+    s = horizon_demand(forecast, ANNUAL_HORIZON)
+    return {
+        "D": s["expected_demand"],
+        "D_lower": s["lower_demand"],
+        "D_upper": s["upper_demand"],
+        "mean_daily": s["mean_daily"],
+        "horizon_days": ANNUAL_HORIZON,
+    }
 
 
 if __name__ == "__main__":
