@@ -1,10 +1,9 @@
-"""Causal map (FCM) for supply-chain resilience & sustainability enablers.
+"""Concepts and causal weights for the resilience/sustainability FCM.
 
-Concepts and signed causal weights are illustrative but internally consistent.
-They connect this project's two halves: the *enablers* on the left include
-"Supplier diversification" — the very lever the allocation model in
-`allocation.py` exercises — and the *targets* on the right include the
-"Resilience" the disruption stress test measures.
+Weights are illustrative but internally consistent. "Supplier
+diversification" is the same lever the allocation model exercises, and
+"Resilience" is what the disruption stress test measures, which is what ties
+the two halves of the project together.
 
 W[i, j] = causal influence of concept i ON concept j, in [-1, 1].
 """
@@ -21,7 +20,6 @@ CONCEPTS = [
     "Sustainability",            # 6  target
 ]
 
-# directed, signed causal links
 _EDGES = {
     ("Blockchain traceability", "Supply-chain visibility"): 0.80,
     ("Blockchain traceability", "Sustainability"): 0.55,

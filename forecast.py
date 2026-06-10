@@ -1,19 +1,10 @@
-"""Stage 1 (part 3) — Prophet demand-forecasting pipeline.
+"""Prophet demand forecasting.
 
-This is the *predictive* half of an optimised Stage 1. The 2021 Yousefi model
-allocates orders for a demand figure taken as given; here we forecast that
-figure from history first, so the downstream allocation (allocation.py) is
-sizing real expected demand rather than a guessed constant.
-
-Pipeline:
-    1. instantiate Prophet with multiplicative weekly + yearly seasonality
-       (matching how the synthetic history in demand_data.py was built),
-    2. fit it on the 5-year daily history,
-    3. project a future horizon and expose the total expected demand over it,
-       ready to hand to the order-allocation model.
+The 2021 model takes demand as a given constant; here it comes from a
+forecast instead. Fit Prophet on the 5-year synthetic history, project a
+horizon, and reduce the forecast to the demand numbers the allocation model
+needs (point estimate plus the prediction-interval band for uncertainty).
 """
-
-from __future__ import annotations
 
 import logging
 
@@ -22,39 +13,32 @@ from prophet import Prophet
 
 from demand_data import load_demand_history
 
-# Prophet/cmdstanpy are chatty on stdout; quiet them for a clean demo run.
+# prophet/cmdstanpy print a lot by default
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
-DEFAULT_HORIZON = 90    # days to forecast (a quarter)
-ANNUAL_HORIZON = 365    # days to forecast (a full upcoming year)
+DEFAULT_HORIZON = 90    # days, one quarter
+ANNUAL_HORIZON = 365
 
 
 def build_model() -> Prophet:
-    """Instantiate the Prophet pipeline.
-
-    Seasonality is multiplicative because demand swings scale with the level of
-    the (growing) trend — the same generative assumption used to synthesise the
-    history, so the model is configured to recover the structure that's there.
-    """
+    # multiplicative seasonality because the synthetic history is built that
+    # way (and real order volumes usually scale with the trend too)
     return Prophet(
         growth="linear",
         yearly_seasonality=True,
         weekly_seasonality=True,
         daily_seasonality=False,
         seasonality_mode="multiplicative",
-        interval_width=0.90,  # 90% prediction intervals
+        interval_width=0.90,
     )
 
 
-def fit_forecast(
-    history: pd.DataFrame | None = None,
-    horizon: int = DEFAULT_HORIZON,
-) -> tuple[Prophet, pd.DataFrame]:
-    """Fit Prophet on `history` and forecast `horizon` days ahead.
+def fit_forecast(history: pd.DataFrame | None = None, horizon: int = DEFAULT_HORIZON):
+    """Fit on `history` and predict `horizon` days ahead.
 
-    Returns the fitted model and Prophet's full forecast frame (yhat plus
-    yhat_lower / yhat_upper and the trend/seasonality components).
+    Returns (model, forecast) where forecast is Prophet's full output frame
+    (yhat, yhat_lower, yhat_upper, components).
     """
     if history is None:
         history = load_demand_history()
@@ -67,16 +51,8 @@ def fit_forecast(
     return model, forecast
 
 
-def horizon_demand(
-    forecast: pd.DataFrame,
-    horizon: int = DEFAULT_HORIZON,
-) -> dict:
-    """Summarise the forecast horizon into numbers the allocator can use.
-
-    The allocation model wants a single demand quantity; we give it the total
-    expected demand over the horizon, with the prediction-interval band so the
-    plan can be stress-tested against optimistic / pessimistic demand too.
-    """
+def horizon_demand(forecast: pd.DataFrame, horizon: int = DEFAULT_HORIZON) -> dict:
+    """Total expected demand over the horizon, with the interval band."""
     tail = forecast.tail(horizon)
     return {
         "horizon_days": horizon,
@@ -88,24 +64,15 @@ def horizon_demand(
 
 
 def forecast_demand(horizon: int = DEFAULT_HORIZON) -> dict:
-    """End-to-end convenience: history -> Prophet -> horizon demand summary."""
     _, forecast = fit_forecast(horizon=horizon)
     return horizon_demand(forecast, horizon)
 
 
 def annual_demand() -> dict:
-    """Predict the annual demand requirement `D` for the upcoming year.
+    """Annual demand D for the upcoming year, with its 90% interval.
 
-    Forecasts the next 365 days and extracts the point estimate `D` together
-    with the lower / upper bounds of Prophet's prediction interval, so the
-    optimiser can size orders to expected demand *and* stress-test against the
-    pessimistic and optimistic ends of the forecast uncertainty.
-
-    Returns:
-        D        expected annual demand (Σ yhat),
-        D_lower  pessimistic annual demand (Σ yhat_lower),
-        D_upper  optimistic annual demand (Σ yhat_upper),
-        plus the mean daily rate and horizon length.
+    The lower/upper sums let the optimiser stress-test the plan against the
+    pessimistic and optimistic ends of the forecast, not just the mean.
     """
     _, forecast = fit_forecast(horizon=ANNUAL_HORIZON)
     s = horizon_demand(forecast, ANNUAL_HORIZON)
@@ -120,16 +87,12 @@ def annual_demand() -> dict:
 
 if __name__ == "__main__":
     history = load_demand_history()
-    print(f"Fitting Prophet on {len(history):,} days "
-          f"({history['ds'].min().date()} .. {history['ds'].max().date()}) ...")
+    print(f"fitting on {len(history)} days "
+          f"({history['ds'].min().date()} to {history['ds'].max().date()})")
 
     model, forecast = fit_forecast(history, horizon=DEFAULT_HORIZON)
-    summary = horizon_demand(forecast, DEFAULT_HORIZON)
+    s = horizon_demand(forecast, DEFAULT_HORIZON)
 
-    print(f"\nForecast horizon: next {summary['horizon_days']} days")
-    print(f"  expected demand : {summary['expected_demand']:>12,.0f} units")
-    print(f"  90% interval    : {summary['lower_demand']:>12,.0f} .. "
-          f"{summary['upper_demand']:,.0f} units")
-    print(f"  mean daily      : {summary['mean_daily']:>12,.0f} units/day")
-    print("\nThis expected-demand figure is what feeds order allocation "
-          "(allocation.py).")
+    print(f"next {s['horizon_days']} days: {s['expected_demand']:,.0f} units expected "
+          f"({s['lower_demand']:,.0f} to {s['upper_demand']:,.0f} at 90%), "
+          f"about {s['mean_daily']:,.0f}/day")

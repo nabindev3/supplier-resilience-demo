@@ -1,20 +1,13 @@
-"""
-Order-allocation module — this is where the demo *bridges* Yousefi's 2021
-deterministic model into his CURRENT research agenda (2022-2026): supply-chain
-resilience and disruption-risk management (Ontario Tech / formerly UBC Okanagan).
+"""Order allocation MILP plus a post-commit disruption stress test.
 
-The 2021 paper allocates orders to DEA-efficient suppliers to minimise cost.
-We keep that core, then add the dimension his own follow-up work opened up
-(see Jahangoshai Rezaee et al., "Multi-stage hybrid model ... considering
-disruption risks," Int. J. Production Economics, 2021):
+The 2021 paper allocates orders to DEA-efficient suppliers at minimum cost
+but is fully deterministic: no supplier ever fails. This module keeps that
+allocation core and adds two resilience levers (a per-supplier share cap and
+a minimum number of active suppliers) plus stress_test(), which knocks out a
+supplier *after* orders are committed and counts what survives.
 
-  * a *disruption scenario* that knocks out / degrades supplier capacity, and
-  * *resilience constraints* (single-sourcing cap + minimum active suppliers)
-    that trade a little cost for the ability to absorb a disruption.
-
-Solved as a MILP with PuLP/CBC. An `unmet` variable with a stockout penalty
-keeps the model always feasible, so a disruption shows up honestly as lost
-service rather than an infeasible solve.
+The `unmet` variable with a big penalty keeps the model feasible no matter
+what, so a disruption shows up as lost service instead of an infeasible solve.
 """
 
 import pulp
@@ -33,17 +26,13 @@ def allocate(
 ):
     """Allocate `demand` units across suppliers.
 
-    suppliers: {name: {"price": float, "capacity": float, "min_order": float}}
-    efficiency: {name: DEA score in (0,1]}  -- from dea.ccr_input_efficiency
-    efficiency_weight: reward (per unit) for routing orders to efficient
-        suppliers; 0 == pure cost minimisation (faithful to the 2021 cost goal).
-    max_share: cap on the fraction of demand any one supplier may serve
-        (resilience lever; 1.0 disables it).
-    min_suppliers: minimum number of suppliers that must be used
-        (resilience lever; 1 disables it -> single sourcing allowed).
-    disruption: {name: remaining_capacity_fraction}  e.g. {"S2": 0.0} downs S2.
-
-    Returns dict with allocation, cost, unmet units, service level, status.
+    suppliers: {name: {"price", "capacity", "min_order"}}
+    efficiency: DEA scores from dea.ccr_input_efficiency
+    efficiency_weight: per-unit reward for using efficient suppliers
+        (0 = pure cost minimisation, as in the 2021 model)
+    max_share: cap on any one supplier's fraction of demand (1.0 = off)
+    min_suppliers: minimum number of suppliers used (1 = off)
+    disruption: {name: remaining_capacity_fraction}, e.g. {"S2": 0.0}
     """
     disruption = disruption or {}
     names = list(suppliers.keys())
@@ -53,23 +42,21 @@ def allocate(
     use = {j: pulp.LpVariable(f"use_{j}", cat="Binary") for j in names}
     unmet = pulp.LpVariable("unmet", lowBound=0)
 
-    # Objective: purchasing cost + stockout penalty - efficiency reward
     prob += (
         pulp.lpSum(suppliers[j]["price"] * q[j] for j in names)
         + STOCKOUT_PENALTY * unmet
         - efficiency_weight * pulp.lpSum(efficiency[j] * q[j] for j in names)
     )
 
-    # Meet demand (or record the shortfall)
     prob += pulp.lpSum(q[j] for j in names) + unmet == demand
 
     for j in names:
         eff_cap = suppliers[j]["capacity"] * disruption.get(j, 1.0)
-        prob += q[j] <= eff_cap * use[j]                       # capacity + link
-        prob += q[j] >= suppliers[j]["min_order"] * use[j]     # min order if used
-        prob += q[j] <= max_share * demand                     # anti single-source
+        prob += q[j] <= eff_cap * use[j]
+        prob += q[j] >= suppliers[j]["min_order"] * use[j]
+        prob += q[j] <= max_share * demand
 
-    prob += pulp.lpSum(use[j] for j in names) >= min_suppliers  # multi-sourcing
+    prob += pulp.lpSum(use[j] for j in names) >= min_suppliers
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
@@ -90,14 +77,11 @@ def allocate(
 
 
 def stress_test(suppliers: dict, demand: float, allocation: dict, disruption: dict):
-    """Apply a disruption to an *already-committed* plan (no re-optimisation).
+    """Apply a disruption to an already-committed plan, no re-optimisation.
 
-    This is the honest resilience metric: orders were placed before anyone knew
-    a supplier would fail, so units committed above a supplier's surviving
-    capacity are simply lost. A plan concentrated on one supplier loses far more
-    than a diversified one -- the whole point of the resilience levers.
-
-    Returns realised fulfilled units, lost units, and realised service level.
+    Orders were placed before the failure was known, so anything committed
+    above a supplier's surviving capacity is lost. A plan concentrated on one
+    supplier loses far more than a diversified one.
     """
     fulfilled = 0.0
     lost = 0.0

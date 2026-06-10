@@ -1,83 +1,65 @@
-"""Stage 1 (part 1) — synthetic demand history.
+"""Synthetic daily demand history for the forecasting stage.
 
-The 2021 Yousefi/Jahangoshai Rezaee/Solimanpur model takes demand as a single
-given number. To *optimise* Stage 1 we first need something to forecast, so this
-module synthesises a realistic operating history: five years of **daily** demand
-built from four interpretable components,
-
-    demand(t) = trend(t) · weekly(t) · yearly(t) · (1 + noise)
-
-  * trend   — steady compound growth in the business (units/day rising ~8%/yr),
-  * weekly  — a within-week cycle (weekday peak, weekend dip),
-  * yearly  — an annual season (holiday-quarter peak, mid-year trough),
-  * noise   — Gaussian day-to-day variation.
-
-Output is a tidy DataFrame in the exact shape Prophet expects — a `ds`
-(datestamp) column and a `y` (value) column — so it drops straight into the
-forecasting pipeline in `forecast.py`.
+Five years of daily demand built as trend * weekly * yearly * noise.
+Multiplicative on purpose: real order volumes swing more as the business
+grows, and it also gives Prophet (in multiplicative mode) something it can
+actually recover. Output columns are ds/y, the shape Prophet expects.
 """
-
-from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-# ---- generative parameters (all interpretable, all in one place) ------------
 HISTORY_YEARS = 5
 START_DATE = "2021-01-01"
-BASE_DEMAND = 1_000.0     # units/day at the start of the series
-ANNUAL_GROWTH = 0.08      # +8% compound trend per year
-WEEKLY_AMPLITUDE = 0.12   # ±12% weekday/weekend swing
-YEARLY_AMPLITUDE = 0.20   # ±20% seasonal swing
-NOISE_SD = 0.05           # 5% (relative) Gaussian daily noise
-SEED = 42                 # reproducible synthetic data
+BASE_DEMAND = 1000.0      # units/day at the start of the series
+ANNUAL_GROWTH = 0.08
+WEEKLY_AMPLITUDE = 0.12
+YEARLY_AMPLITUDE = 0.20
+NOISE_SD = 0.05
+SEED = 42
 
 CSV_PATH = "demand_history.csv"
 
 
-def make_demand_history(
-    years: int = HISTORY_YEARS,
-    start: str = START_DATE,
-    seed: int = SEED,
-) -> pd.DataFrame:
-    """Return `years` of daily demand as a Prophet-ready DataFrame (ds, y).
-
-    Components are multiplicative so the seasonal swings scale naturally with
-    the growing trend, which is how real order volumes tend to behave.
-    """
+def make_demand_history(years=HISTORY_YEARS, start=START_DATE, seed=SEED) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     dates = pd.date_range(start=start, periods=years * 365, freq="D")
     t = np.arange(len(dates))
 
-    # Compound growth trend on the base demand level.
     trend = BASE_DEMAND * (1.0 + ANNUAL_GROWTH) ** (t / 365.0)
 
-    # Weekly cycle: a smooth sinusoid plus an explicit weekend dip so the
-    # within-week shape looks like a real order book, not a pure sine wave.
-    dow = dates.dayofweek.to_numpy()                       # 0 = Monday
+    # sinusoid plus an explicit weekend dip; a pure sine wave looked too clean
+    dow = dates.dayofweek.to_numpy()
     weekly = 1.0 + WEEKLY_AMPLITUDE * np.sin(2 * np.pi * t / 7.0)
-    weekly = weekly - WEEKLY_AMPLITUDE * (dow >= 5)        # Sat/Sun softer
+    weekly = weekly - WEEKLY_AMPLITUDE * (dow >= 5)
 
-    # Yearly cycle: peak late in the year (holiday demand), trough mid-year.
+    # yearly peak near year end (holiday quarter), trough mid-year
     doy = dates.dayofyear.to_numpy()
     yearly = 1.0 + YEARLY_AMPLITUDE * np.sin(2 * np.pi * doy / 365.0 - np.pi / 2)
 
     noise = rng.normal(0.0, NOISE_SD, size=len(t))
-    y = trend * weekly * yearly * (1.0 + noise)
-    y = np.maximum(y, 0.0).round()                         # demand is non-negative
+    y = np.maximum(trend * weekly * yearly * (1.0 + noise), 0.0).round()
 
-    return pd.DataFrame({"ds": dates, "y": y})
+    df = pd.DataFrame({"ds": dates, "y": y})
+
+    # real demand extracts are never complete: drop ~1% of days at random,
+    # plus one ~10-day hole somewhere in the middle (the kind an ERP
+    # migration leaves). Prophet deals with missing dates natively, so the
+    # pipeline has to cope rather than assume a gapless series.
+    df = df[rng.random(len(df)) > 0.01]
+    hole = int(rng.integers(200, len(df) - 200))
+    df = df.drop(df.index[hole:hole + 10])
+    return df.reset_index(drop=True)
 
 
-def save_demand_history(path: str = CSV_PATH, **kwargs) -> pd.DataFrame:
-    """Generate the history and persist it to CSV; return the DataFrame."""
+def save_demand_history(path=CSV_PATH, **kwargs) -> pd.DataFrame:
     df = make_demand_history(**kwargs)
     df.to_csv(path, index=False)
     return df
 
 
-def load_demand_history(path: str = CSV_PATH) -> pd.DataFrame:
-    """Load a previously saved history, regenerating it if absent."""
+def load_demand_history(path=CSV_PATH) -> pd.DataFrame:
+    """Load the saved history, regenerating it if the CSV isn't there."""
     try:
         return pd.read_csv(path, parse_dates=["ds"])
     except FileNotFoundError:
@@ -86,8 +68,7 @@ def load_demand_history(path: str = CSV_PATH) -> pd.DataFrame:
 
 if __name__ == "__main__":
     df = save_demand_history()
-    print(f"Synthesised {len(df):,} days of demand -> {CSV_PATH}")
-    print(f"  range : {df['ds'].min().date()} .. {df['ds'].max().date()}")
-    print(f"  demand: mean {df['y'].mean():,.0f}  "
-          f"min {df['y'].min():,.0f}  max {df['y'].max():,.0f}")
-    print(df.head().to_string(index=False))
+    print(f"wrote {len(df)} days to {CSV_PATH} "
+          f"({df['ds'].min().date()} to {df['ds'].max().date()})")
+    print(f"demand mean {df['y'].mean():.0f}, "
+          f"min {df['y'].min():.0f}, max {df['y'].max():.0f}")

@@ -1,13 +1,6 @@
-"""
-Streamlit proof-of-concept with two linked views:
-
-  1. DEA-based supplier selection & order allocation + disruption-resilience
-     analysis  (bridges Yousefi, Jahangoshai Rezaee & Solimanpur 2021,
-     Operational Research 21(1), 553-588).
-  2. A Fuzzy Cognitive Map (FCM) of the causal drivers of resilience &
-     sustainability — the methodology Dr. Yousefi uses in his blockchain /
-     sustainable-supply-chain work (FCM + hybrid learning + DEA;
-     e.g. Int. J. Production Economics 246, 2022; Eng. Applications of AI, 2024).
+"""Streamlit demo with two linked views: DEA-based order allocation with a
+disruption stress test (after Yousefi et al. 2021), and a Fuzzy Cognitive
+Map of resilience/sustainability enablers.
 
 Run:  streamlit run app.py
 """
@@ -25,30 +18,28 @@ st.set_page_config(page_title="DEA Allocation + Resilience + FCM", layout="wide"
 
 st.title("Supplier Selection, Order Allocation & Disruption Resilience")
 st.caption(
-    "DEA efficiency + order allocation (after Yousefi et al., 2021), extended with "
-    "a disruption stress test and a Fuzzy Cognitive Map of resilience/sustainability "
-    "enablers — bridging the 2021 model toward Dr. Yousefi's current research."
+    "DEA efficiency + order allocation (after Yousefi et al., 2021), extended "
+    "with a disruption stress test and a causal map of resilience enablers."
 )
 
-# --------------------------------------------------------------------- sidebar
+# sidebar -----------------------------------------------------------------
 st.sidebar.header("Allocation controls")
 demand = st.sidebar.number_input("Total demand (units)", 100, 100000, DEFAULT_DEMAND, 100)
 eff_weight = st.sidebar.slider(
     "Efficiency reward weight", 0.0, 5.0, 1.5, 0.1,
-    help="0 = pure cost minimisation (the 2021 cost goal). Higher pulls orders "
-         "toward DEA-efficient suppliers.",
+    help="0 = pure cost minimisation. Higher pulls orders toward DEA-efficient suppliers.",
 )
 st.sidebar.markdown("**Resilience levers**")
 max_share = st.sidebar.slider(
     "Max share per supplier", 0.1, 1.0, 0.4, 0.05,
-    help="Caps how much of demand any single supplier may serve (anti single-sourcing).",
+    help="Caps how much of demand any single supplier may serve.",
 )
 min_suppliers = st.sidebar.slider("Minimum active suppliers", 1, len(SUPPLIERS), 3)
 st.sidebar.markdown("**Disruption (hits the committed plan)**")
 _choices = ["(none)"] + list(SUPPLIERS)
 disrupted = st.sidebar.selectbox(
     "Supplier disrupted", _choices, index=len(_choices) - 1,
-    help="Defaults to a disruption so the cost-vs-resilience trade-off is visible on load.",
+    help="Defaults to a disruption so the trade-off is visible on load.",
 )
 severity = st.sidebar.slider(
     "Remaining capacity of disrupted supplier", 0.0, 1.0, 0.0, 0.05,
@@ -56,14 +47,14 @@ severity = st.sidebar.slider(
 )
 disruption = {disrupted: severity} if disrupted != "(none)" else {}
 
-tab_alloc, tab_fcm = st.tabs(["📦 Allocation & Resilience", "🕸️ Causal Map (FCM)"])
+tab_alloc, tab_fcm = st.tabs(["Allocation & Resilience", "Causal Map (FCM)"])
 
-# ======================================================= TAB 1: allocation
+# tab 1: allocation -------------------------------------------------------
 with tab_alloc:
-    st.subheader("1 · Supplier data")
+    st.subheader("1. Supplier data")
     st.caption(
         "DEA inputs (minimise): price, lead time, defect %. "
-        "DEA outputs (maximise): quality, on-time %, capacity. Edit any cell."
+        "Outputs (maximise): quality, on-time %, capacity. Edit any cell."
     )
     df = pd.DataFrame(SUPPLIERS).T.reset_index().rename(columns={"index": "supplier"})
     edited = st.data_editor(df, hide_index=True, use_container_width=True, key="suppliers")
@@ -83,7 +74,7 @@ with tab_alloc:
     inp, out = dea_arrays(suppliers)
     efficiency = ccr_input_efficiency(inp, out)
 
-    st.subheader("2 · DEA efficiency (input-oriented CCR)")
+    st.subheader("2. DEA efficiency (input-oriented CCR)")
     eff_df = pd.DataFrame(
         {"supplier": list(efficiency), "DEA efficiency": list(efficiency.values())}
     )
@@ -97,7 +88,7 @@ with tab_alloc:
         efficiency_weight=eff_weight, max_share=max_share, min_suppliers=min_suppliers,
     )
 
-    st.subheader("3 · Two allocation strategies")
+    st.subheader("3. Two allocation strategies")
     plan_df = pd.DataFrame(
         {
             "supplier": list(suppliers),
@@ -120,7 +111,7 @@ with tab_alloc:
             f"resilient uses {len(res_plan['active_suppliers'])}."
         )
 
-    st.subheader("4 · Disruption stress test")
+    st.subheader("4. Disruption stress test")
     if not disruption:
         st.info("Select a disrupted supplier in the sidebar to stress-test both plans.")
     else:
@@ -128,7 +119,7 @@ with tab_alloc:
         res_hit = stress_test(suppliers, demand, res_plan["allocation"], disruption)
         label = f"{disrupted} at {severity:.0%} capacity"
         st.caption(
-            f"After orders are committed, **{label}**. Pre-committed units above "
+            f"After orders are committed, **{label}**. Units committed above "
             "surviving capacity are lost."
         )
         s1, s2 = st.columns(2)
@@ -143,20 +134,18 @@ with tab_alloc:
         premium = res_plan["purchasing_cost"] - cost_plan["purchasing_cost"]
         gain = res_hit["realized_service_level"] - cost_hit["realized_service_level"]
         st.success(
-            f"The resilient plan costs **${premium:,.0f} more** up front but delivers "
-            f"**{gain:+.0%} higher realised service** when {label}. This cost-vs-"
-            "resilience trade-off is exactly the gap the 2021 deterministic model leaves open."
+            f"The resilient plan costs **${premium:,.0f} more** up front but keeps "
+            f"**{gain:+.0%} more realised service** when {label}. A deterministic "
+            "model never sees this trade-off."
         )
 
-# ============================================================ TAB 2: FCM
+# tab 2: FCM ---------------------------------------------------------------
 with tab_fcm:
     st.subheader("Causal map of resilience & sustainability enablers")
     st.caption(
-        "A Fuzzy Cognitive Map (FCM): signed, weighted causal links between enablers "
-        "and targets. Green = reinforcing, red = inhibiting. This is the methodology "
-        "Dr. Yousefi uses to model blockchain enablers → sustainability targets "
-        "(FCM + hybrid learning). Note the **Supplier diversification** node — the same "
-        "lever the allocation model on the other tab exercises."
+        "Signed, weighted causal links between enablers and targets. Green = "
+        "reinforcing, red = inhibiting. The 'Supplier diversification' node is "
+        "the same lever the allocation tab exercises."
     )
 
     fcm = FCM(CONCEPTS, weight_matrix())
@@ -175,15 +164,15 @@ with tab_fcm:
         st.caption("State transitions over time (each line is a concept's activation).")
         st.line_chart(pd.DataFrame(traj, columns=CONCEPTS))
     with g2:
-        st.caption("Downstream effect vs. baseline (Δ).")
+        st.caption("Downstream effect vs baseline.")
         delta_df = pd.DataFrame(
             [(c, b, s, d) for c, (b, s, d) in result.items()],
-            columns=["concept", "baseline", "scenario", "Δ"],
+            columns=["concept", "baseline", "scenario", "delta"],
         )
         st.dataframe(delta_df, hide_index=True, use_container_width=True)
 
     st.caption(
-        "Weights here are expert-defined; in Dr. Yousefi's work a hybrid learning "
-        "algorithm tunes them. `fcm.nhl_step()` implements a Nonlinear Hebbian "
-        "Learning update from that family."
+        "Weights are expert-defined here; in the original papers a hybrid "
+        "learning algorithm tunes them. fcm.nhl_step() implements the Hebbian "
+        "half of that."
     )

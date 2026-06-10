@@ -1,11 +1,8 @@
-"""Illustrative supplier data (synthetic, in the spirit of the 2021 case data).
+"""Supplier table for the 6-supplier demo (numbers are made up, roughly in
+the spirit of the 2021 paper's case data).
 
-Six suppliers described by the criteria a DEA model needs:
-  INPUTS  (minimise): unit price, lead time (days), defect rate (%)
-  OUTPUTS (maximise): quality score (0-100), on-time delivery (%), capacity (u)
-
-The same `capacity` and `price` feed the allocation model, so DEA scoring and
-order allocation stay consistent.
+DEA inputs (lower is better): price, lead_time, defect
+DEA outputs (higher is better): quality, on_time, capacity
 """
 
 SUPPLIERS = {

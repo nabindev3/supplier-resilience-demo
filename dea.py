@@ -1,32 +1,21 @@
-"""
-DEA module — the *recognizable DNA* of Yousefi, Jahangoshai Rezaee & Solimanpur
-(2021), "Supplier selection and order allocation using two-stage hybrid supply
-chain model and game-based order price," Operational Research 21(1), 553-588.
+"""Input-oriented CCR DEA (envelopment form), one LP per supplier.
 
-In that paper, supplier *efficiency* is computed with Data Envelopment Analysis
-(DEA) and then fed into the order-allocation model so that orders flow toward
-efficient suppliers rather than merely cheap ones.
+For each DMU o:
+    min  theta
+    s.t. sum_j lambda_j * x_ij <= theta * x_io   for each input i
+         sum_j lambda_j * y_rj >= y_ro           for each output r
+         lambda_j, theta >= 0
 
-Here we implement the standard input-oriented CCR (Charnes-Cooper-Rhodes) model
-in its envelopment form, solved as one LP per supplier (DMU) with PuLP/CBC.
-
-For DMU `o`:
-    minimize   theta
-    s.t.       sum_j lambda_j * x_ij <= theta * x_io   for each input  i
-               sum_j lambda_j * y_rj >=        y_ro     for each output r
-               lambda_j, theta >= 0
-Efficiency score = theta*  in (0, 1];  1.0 == on the efficient frontier.
+Score = theta* in (0, 1], 1.0 means on the efficient frontier. Same role as
+in Yousefi et al. (2021): the scores feed the allocation model so orders go
+to efficient suppliers, not just cheap ones.
 """
 
 import pulp
 
 
 def ccr_input_efficiency(inputs: dict, outputs: dict) -> dict:
-    """Return {supplier: efficiency_score} via input-oriented CCR DEA.
-
-    inputs:  {supplier: [values to MINIMIZE]}  e.g. price, lead time, defect %
-    outputs: {supplier: [values to MAXIMIZE]}  e.g. quality, on-time %, capacity
-    """
+    """inputs/outputs: {supplier: [values]}. Returns {supplier: score}."""
     suppliers = list(inputs.keys())
     n_in = len(next(iter(inputs.values())))
     n_out = len(next(iter(outputs.values())))
@@ -37,7 +26,7 @@ def ccr_input_efficiency(inputs: dict, outputs: dict) -> dict:
         theta = pulp.LpVariable("theta", lowBound=0)
         lam = {j: pulp.LpVariable(f"lambda_{j}", lowBound=0) for j in suppliers}
 
-        prob += theta  # objective
+        prob += theta
 
         for i in range(n_in):
             prob += (

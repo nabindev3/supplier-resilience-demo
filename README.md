@@ -1,222 +1,153 @@
-# Supplier Selection, Order Allocation & Disruption Resilience
+# Supplier selection, order allocation & disruption resilience
 
-> A DEA-driven supplier order-allocation model with **disruption-resilience
-> analysis** and a **Fuzzy Cognitive Map** of resilience/sustainability enablers —
-> bridging a 2021 two-stage supply-chain model toward the FCM + hybrid-learning
-> methods in Dr. Yousefi's recent blockchain / sustainable-supply-chain research.
+A working reimplementation of the supplier-selection core from Yousefi,
+Jahangoshai Rezaee & Solimanpur (2021), extended with the question their
+deterministic model can't answer: when a supplier fails *after* orders are
+committed, how much does diversification cost, and how much service does it
+save?
 
-**▶ Live demo:** https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/ — no install needed.
+**Live demo:** https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Streamlit](https://img.shields.io/badge/UI-Streamlit-red)
-![Solver](https://img.shields.io/badge/solver-PuLP%20%2F%20CBC-green)
-![Forecast](https://img.shields.io/badge/forecast-Prophet-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
-
-This project reproduces the **DEA + order-allocation core** of Yousefi,
-Jahangoshai Rezaee & Solimanpur (2021) and extends it with a question their
-deterministic model leaves open: *when a supplier fails after orders are
-committed, how much does diversification cost, and how much service does it save?*
-
----
-
-## Table of contents
-- [Background](#background)
-- [What it does](#what-it-does)
-- [Relation to Dr. Yousefi's research](#relation-to-dr-yousefis-research)
-- [Results](#results)
-- [Quick start](#quick-start)
-- [How it works](#how-it-works)
-- [Project layout](#project-layout)
-- [Limitations](#limitations)
-- [Reference](#reference)
-- [License](#license)
 
 ## Background
 
-> Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). *Supplier
+> Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). Supplier
 > selection and order allocation using two-stage hybrid supply chain model and
-> game-based order price.* **Operational Research, 21**(1), 553–588.
-> [doi:10.1007/s12351-019-00456-6](https://doi.org/10.1007/s12351-019-00456-6)
+> game-based order price. *Operational Research, 21*(1), 553-588.
 
-The original is a two-stage hybrid model:
+The original is a two-stage model: Stage 1 fuses a buyer/vendor coordination
+model with DEA so orders flow to *efficient* suppliers (not just cheap ones),
+and Stage 2 sets the price through a Nash bargaining game. It's deterministic
+end to end: demand is a given constant and no supplier ever fails. This repo
+keeps the recognisable Stage-1 structure and fills in both gaps.
 
-1. **Stage 1** — a Multi-Objective Mixed-Integer Nonlinear Program fusing a
-   single-buyer/multi-vendor coordination model with **Data Envelopment Analysis
-   (DEA)** to pick efficient suppliers and allocate orders at minimum cost (later
-   linearised to a quadratic program).
-2. **Stage 2** — a **Nash bargaining game** that sets the buyer–supplier price.
+## What's here
 
-That model is **deterministic** — it has no notion of a supplier failing. This
-project keeps the recognisable Stage-1 DNA (DEA efficiency → allocation) and adds
-the missing **resilience** dimension.
+**Forecast-driven Stage 1** (`demand_data.py`, `forecast.py`, `stage1.py`).
+Instead of taking demand as given, I synthesise 5 years of daily demand
+(growth trend, weekly and yearly seasonality, noise), fit Prophet on it, and
+feed the annual forecast D into a MILP that picks suppliers and quantities.
+Two objectives, combined with the weighted global criterion method:
 
-## What it does
+- Z1: total annual cost (purchasing + holding + setup)
+- Z2: sum of DEA efficiency scores of the selected suppliers
 
-- **Demand forecasting (Stage 1 front-end)** — a **Prophet** pipeline fit on 5
-  years of synthetic daily demand (trend + weekly & yearly seasonality + noise)
-  projects future demand, so order allocation sizes a *forecast* instead of a
-  hand-picked constant.
-- **DEA efficiency scoring** — input-oriented CCR model, one LP per supplier.
-- **Order allocation** — a MILP that meets demand at minimum purchasing cost, with
-  an optional reward for routing orders to DEA-efficient suppliers.
-- **Resilience levers** — cap any single supplier's share of demand; require a
-  minimum number of active suppliers (anti single-sourcing).
-- **Disruption stress test** — commit a plan, *then* knock out a supplier; units
-  committed above surviving capacity are lost. Compares a **cost-only** plan
-  against a **resilient** plan on *realised* service level.
-- **Fuzzy Cognitive Map (FCM)** — a signed, weighted causal graph of resilience &
-  sustainability enablers (blockchain traceability, smart contracts, supplier
-  diversification → visibility → disruption risk → resilience → sustainability).
-  Iterating the sigmoid update rule simulates how switching one enabler "on"
-  propagates through the system and re-settles every other concept, with a
-  Nonlinear Hebbian Learning step for weight adaptation.
+`risk_sweep()` re-solves across 10 weight settings and plots the Pareto
+frontier. One thing I learned the hard way: normalising each objective by its
+ideal value makes the sweep collapse to about 3 distinct solutions, because
+cost only moves ~5% off its ideal while the efficiency sum moves ~80%. You
+have to normalise by the ideal-to-nadir *range* to get an even sweep.
 
-## Relation to Dr. Yousefi's research
+**Resilience extension** (`allocation.py`). A share cap and a minimum
+supplier count force diversification, and `stress_test()` knocks out a
+supplier after orders are committed. With the default 6-supplier data,
+demand of 1,000 units and the high-volume supplier S6 failing:
 
-This project is built directly on the methodological toolkit in Dr. Samuel
-Yousefi's work, so each component maps to a concept from his papers:
+| Plan | Purchasing cost | Suppliers | Service when S6 fails |
+|------|----------------:|:---------:|:---------------------:|
+| Cost-only | $8,150 | 2 | 30% |
+| Resilient (max 40% share, min 3 suppliers) | $8,400 | 3 | 60% |
 
-| This repo | Concept | Source in his work |
-|-----------|---------|--------------------|
-| `forecast.py` — Prophet demand forecasting | **Predictive front-end to Stage 1** (the 2021 model takes demand as given) | optimises the demand input the 2021 allocation assumes fixed |
-| `dea.py` — CCR efficiency scoring | **Data Envelopment Analysis** to rank suppliers/enablers | Yousefi et al. (2021), *Oper. Res.* 21(1); also used in the 2022 FCM paper below |
-| `allocation.py` — DEA-aware order allocation | **Supplier selection & order allocation** (Stage 1) | Yousefi, Jahangoshai Rezaee & Solimanpur (2021) |
-| `allocation.py` — resilience levers + `stress_test` | **Disruption-risk / resilience** extension | the gap left open by the 2021 deterministic model; his current research agenda |
-| `fcm.py` — causal graph + sigmoid state propagation | **Fuzzy Cognitive Maps** of enablers → performance targets | Yousefi & Mohamadpour Tosarkani (2022), *IJPE* 246; *Eng. Appl. of AI* (2024) |
-| `fcm.py` — `run()` iterating to a fixed point | **System dynamics / state transitions over time** | the FCM simulation step in the 2022/2024 papers |
-| `fcm.py` — `nhl_step()` Nonlinear Hebbian Learning | a building block of the **hybrid learning algorithm** he uses to tune FCM weights | Yousefi & Mohamadpour Tosarkani (2022); *Eng. Appl. of AI* (2024) |
+So a 3% cost premium doubles realised service under that disruption. That
+trade-off is invisible to a deterministic model, which is the whole point.
 
-**Honest scope:** the FCM weights here are expert-defined illustrative values, not
-learned from data, and `nhl_step()` is a single Hebbian rule rather than his full
-hybrid (Hebbian + evolutionary) algorithm. The aim is to demonstrate fluency with
-the *methods* — DEA, FCM, causal state-propagation, Hebbian learning — and to show
-how they connect supplier allocation to the resilience and sustainability targets
-his recent work centres on.
+**Stage 2 framing** (`stage2.py`). The setup for the bargaining game: pulls
+q* from Stage 1, computes the annual purchasing cost at list prices, and sets
+the buyer's budget at 95% of that so a negotiation is actually forced. The
+Nash solution itself is not implemented yet.
 
-## Results
+**Fuzzy Cognitive Map** (`fcm.py`, `fcm_data.py`). A signed causal graph of
+resilience and sustainability enablers (blockchain traceability, supplier
+diversification, visibility, disruption risk, ...) with the standard sigmoid
+state propagation, scenario clamping, and a Nonlinear Hebbian Learning step.
+This connects the allocation work to the FCM methodology in Yousefi &
+Mohamadpour Tosarkani (2022, 2024); the weights here are expert-defined, not
+learned, and the NHL step is one rule out of their full hybrid algorithm.
 
-Default 6-supplier scenario, demand = 1,000 units, high-volume supplier **S6**
-disrupted *after* orders are committed:
+## How the pieces fit
 
-| Plan | Purchasing cost | Suppliers used | Realised service when S6 fails |
-|------|----------------:|:--------------:|:------------------------------:|
-| Cost-only | **$8,150** | 2 | **30%** |
-| Resilient (≤40% share, ≥3 suppliers) | $8,400 | 3 | **60%** |
+```
+demand_data.py ──► forecast.py ──► D ± interval ──┐
+                                                  ├──► stage1.py ──► q*, selected ──► stage2.py
+suppliers_config.py ──► dea.py ──► efficiency ────┘         │
+                                                            └──► pareto_frontier.png
 
-**A 3% cost premium doubles realised service under disruption.** That cost-vs-
-resilience trade-off is precisely what a static, deterministic model cannot
-surface.
+data.py ──► dea.py + allocation.py ──► app.py (interactive demo, 6-supplier case)
+fcm_data.py ──► fcm.py ──────────────► app.py (causal map tab)
+```
 
-## Quick start
+The two paths share `dea.py` and the same modelling ideas but different
+supplier pools: the Streamlit demo keeps the small 6-supplier case so every
+number is checkable by hand, the stage-1/2 pipeline uses the 10-supplier
+pool and forecasted demand.
 
-**Zero install:** open the [live demo](https://supplier-resilience-demo-6fuayogumnszf6bneytvbc.streamlit.app/).
+The reasoning behind the less obvious modelling choices (why range
+normalisation, why capacity is not a DEA output, why the budget sits at 95%)
+is in [docs/decisions.md](docs/decisions.md).
 
-Or run it locally:
+## Running it
 
 ```bash
 git clone https://github.com/nabindev3/supplier-resilience-demo.git
 cd supplier-resilience-demo
 pip install -r requirements.txt
-streamlit run app.py
+
+streamlit run app.py     # interactive demo (6-supplier model + FCM)
+python stage1.py         # forecast + DEA + weight sweep + pareto_frontier.png
+python stage2.py         # bargaining-game setup on top of stage 1
+python test_model.py     # smoke tests
 ```
 
-Then edit supplier data, demand, the resilience levers, and the disruption
-scenario live in the browser.
+The Prophet fit takes ~20s; stage1.py and stage2.py both refit it from the
+synthetic history (`demand_history.csv` is regenerated if missing).
 
-## How it works
+## Files
 
-**Demand forecasting (Prophet).** `demand_data.py` synthesises 5 years of daily
-demand as a multiplicative model — compound growth trend × weekly cycle × yearly
-season × Gaussian noise — in Prophet's `(ds, y)` shape. `forecast.py` fits
-Prophet (linear growth, multiplicative weekly + yearly seasonality, 90%
-intervals) and collapses the forecast horizon into a single expected-demand
-figure (with a prediction-interval band) that feeds the allocator:
-
-```
-demand(t) = trend(t) · weekly(t) · yearly(t) · (1 + noise)
-yhat      = Prophet.fit(history).predict(horizon)
-demand_to_allocate = Σ yhat over the horizon
-```
-
-**DEA (CCR, input-oriented).** For each supplier (DMU) `o`:
-
-```
-minimize   θ
-s.t.       Σ_j λ_j · x_ij ≤ θ · x_io     for each input  i   (price, lead time, defect %)
-           Σ_j λ_j · y_rj ≥      y_ro     for each output r   (quality, on-time %, capacity)
-           λ_j, θ ≥ 0
-```
-Efficiency = θ* ∈ (0, 1]; 1.0 means on the efficient frontier.
-
-**Allocation (MILP).** Minimise `Σ price_j·q_j  +  penalty·unmet  −  w·Σ eff_j·q_j`
-subject to demand balance, capacity/linking, minimum order, per-supplier share
-cap, and a minimum-supplier-count constraint.
-
-**Stress test.** Given a *committed* allocation and a disruption, fulfilled units
-= `Σ min(committed_j, surviving_capacity_j)` — no re-optimisation, because orders
-were placed before the failure was known.
-
-**FCM (Fuzzy Cognitive Map).** Concepts carry activations `A_i ∈ [0, 1]`; the
-state evolves by the standard sigmoid rule until it reaches a fixed point:
-
-```
-A_i(t+1) = f( A_i(t) + Σ_{j≠i} w_{j→i} · A_j(t) ),   f(x) = 1 / (1 + e^{-λx})
-```
-
-A *scenario* clamps one enabler "on" and re-runs to convergence, so its influence
-propagates through the signed weights to every downstream concept. `nhl_step()`
-applies a Nonlinear Hebbian Learning update, adapting only the existing causal
-links (preserving the expert-defined structure).
-
-## Project layout
-
-| File | Role |
-|------|------|
-| [`demand_data.py`](demand_data.py) | Synthesises 5 years of daily demand (trend + seasonality + noise) in Prophet's `(ds, y)` shape |
-| [`forecast.py`](forecast.py) | Prophet forecasting pipeline → expected horizon demand for the allocator |
-| [`suppliers_config.py`](suppliers_config.py) | Static 10-supplier catalogue (capacity, unit/holding cost, defect rate, lead time) + DEA/allocation adapters |
-| [`dea.py`](dea.py) | Input-oriented CCR DEA efficiency (PuLP/CBC) |
-| [`allocation.py`](allocation.py) | MILP order allocation + post-commit `stress_test` |
-| [`data.py`](data.py) | Synthetic 6-supplier dataset + DEA input/output split (original 2021 case) |
-| [`fcm.py`](fcm.py) | Fuzzy Cognitive Map engine: state propagation, scenarios, Hebbian learning |
-| [`fcm_data.py`](fcm_data.py) | Enabler/target concepts and signed causal weight matrix |
-| [`app.py`](app.py) | Streamlit UI (Allocation & Resilience tab + Causal Map tab) |
-| [`test_model.py`](test_model.py) | Smoke tests for the engine (allocation + FCM) |
-| [`requirements.txt`](requirements.txt) | Dependencies |
-
-## Tests
-
-```bash
-python test_model.py     # plain runner, no extra dependency
-# or, if pytest is installed:
-python -m pytest
-```
-
-The tests check that DEA scores stay in (0, 1], allocations meet demand, the
-resilient plan diversifies, resilience pays off under a disruption, the FCM
-converges, its causal signs hold, and Hebbian learning stays well-behaved.
+| File | What it does |
+|------|--------------|
+| `demand_data.py` | synthetic 5-year daily demand history |
+| `forecast.py` | Prophet fit, annual demand D with 90% interval |
+| `suppliers_config.py` | 10-supplier candidate pool for stage 1 |
+| `stage1.py` | DEA + multi-objective MILP, weight sweep, Pareto plot |
+| `stage2.py` | Nash bargaining setup (baseline cost, buyer budget) |
+| `data.py` | original 6-supplier case for the interactive demo |
+| `dea.py` | input-oriented CCR DEA, one LP per supplier |
+| `allocation.py` | allocation MILP + post-commit stress test |
+| `fcm.py`, `fcm_data.py` | Fuzzy Cognitive Map engine and the causal map |
+| `app.py` | Streamlit UI |
+| `test_model.py` | smoke tests |
 
 ## Limitations
 
-- **Stage 2 (Nash bargaining price) is not reimplemented** — scope is Stage 1 plus
-  the resilience extension.
-- DEA is the basic CCR (constant returns to scale); no slack-based or
-  super-efficiency variant.
-- Single-period, single-supplier deterministic disruption. A natural next step is
-  scenario-based / stochastic disruption or robust optimisation.
-- Supplier and demand data are synthetic and illustrative; the Prophet forecast
-  is fit on the generated history, so it demonstrates the pipeline rather than
-  predicting a real series.
-- FCM weights are expert-defined, not learned; `nhl_step()` is a single Hebbian
-  rule, not a full hybrid (Hebbian + evolutionary) learning algorithm.
+- All data is synthetic. The Prophet model is fit on a series I generated, so
+  it demonstrates the pipeline rather than predicting anything real.
+- DEA is plain CCR (constant returns to scale), no super-efficiency variant.
+- Single-period, single-supplier deterministic disruption. Scenario-based or
+  stochastic disruptions would be the natural next step.
+- Stage 2 stops at the setup; the Nash bargaining solution is future work.
+
+## What's next
+
+Roughly in order:
+
+1. Finish Stage 2: per-supplier utility functions and disagreement points,
+   then solve the Nash product for the negotiated prices (non-linear, so
+   probably scipy rather than PuLP).
+2. Run each plan on the Pareto frontier through `stress_test()` — that adds
+   realised service under disruption as a third axis to the cost/efficiency
+   trade-off, which is the picture I actually want this project to end on.
+3. Replace the synthetic series with a public demand dataset (M5 or similar)
+   to see whether the pipeline survives contact with real data.
+4. Learn the FCM weights from scenario data instead of fixing them by hand
+   (the full hybrid-learning loop from the 2022 paper).
 
 ## References
 
-Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). Supplier selection
-and order allocation using two-stage hybrid supply chain model and game-based
-order price. *Operational Research, 21*(1), 553–588.
+Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). Supplier
+selection and order allocation using two-stage hybrid supply chain model and
+game-based order price. *Operational Research, 21*(1), 553-588.
 
 Yousefi, S., & Mohamadpour Tosarkani, B. (2022). An analytical approach for
 evaluating the impact of blockchain technology on sustainable supply chain
@@ -228,4 +159,4 @@ analysis. *Engineering Applications of Artificial Intelligence.*
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

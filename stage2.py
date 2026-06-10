@@ -1,46 +1,25 @@
-"""Stage 2 — Nash bargaining game over the order price (framing).
+"""Stage 2 setup: the Nash bargaining game over the order price.
 
-Stage 1 decides *who* supplies *how much* (q_k*). Stage 2 of Yousefi,
-Jahangoshai Rezaee & Solimanpur (2021) then decides *at what price*: a
-non-cooperative Nash bargaining game between the buyer and each selected
-supplier, solved as a non-linear program.
-
-This module frames that game — the first three of its building blocks:
-
-  1. Ingest Stage-1 outputs   — pull q_k* and the selected supplier subset
-     straight from `DemandOptimizationEngine` (no copy-pasted numbers; the
-     bargaining table is whatever the optimiser actually chose).
-  2. Baseline metrics         — the Annual Purchasing Cost (APC) the buyer
-     would pay at list prices if no negotiation took place:
-         APC = Σ_k  unit_cost_k · q_k*      (purchasing only — holding and
-                                             setup are not on the table).
-  3. Buyer's budget           — the hard ceiling B the buyer can spend.
-     Set *below* the baseline APC (default 95%), so the status quo is
-     unaffordable and a negotiated price concession is the only way to close
-     the gap: that gap is what gives the game a non-empty bargaining set.
+Stage 1 fixes who supplies what (q_k*). In the 2021 paper the price is then
+negotiated between the buyer and each selected supplier. This module sets
+the table for that game: pull q_k* from the stage-1 engine, price the
+no-negotiation baseline, and give the buyer a budget below that baseline so
+there is actually something to bargain over.
 """
-
-from __future__ import annotations
 
 import pandas as pd
 
 from stage1 import DemandOptimizationEngine
 
-# Budget = 95% of the no-negotiation cost: tight enough to force every
-# selected supplier to the table, loose enough that a deal plainly exists.
+# budget = 95% of the list-price cost: tight enough to force everyone to the
+# table, loose enough that a deal clearly exists
 BUDGET_FACTOR = 0.95
 
 
-def ingest_stage1(
-    engine: DemandOptimizationEngine | None = None,
-    w1: float = 0.6,
-    w2: float = 0.4,
-) -> tuple[DemandOptimizationEngine, pd.DataFrame]:
-    """Step 1 — pull q_k* and the selected suppliers from the Stage-1 engine.
+def ingest_stage1(engine=None, w1=0.6, w2=0.4):
+    """q_k* and the selected suppliers, straight from the stage-1 engine.
 
-    Accepts an already-run engine (to reuse its cached Prophet fit) or builds
-    one at the given weights. Returns the engine and the structured frame of
-    selected suppliers — the negotiation table.
+    Pass an already-run engine to reuse its cached Prophet fit.
     """
     if engine is None:
         engine = DemandOptimizationEngine(w1=w1, w2=w2)
@@ -50,63 +29,45 @@ def ingest_stage1(
 
 
 def baseline_apc(plan: pd.DataFrame) -> float:
-    """Step 2 — Annual Purchasing Cost with no negotiation.
+    """Annual purchasing cost at list prices: sum(unit_cost * q*).
 
-    What the buyer pays if every selected supplier charges list price for its
-    committed volume: Σ unit_cost_k · q_k*. This is the buyer's *disagreement
-    benchmark* — any bargained outcome must beat it to be worth the talks.
+    Purchasing only. Holding and setup stay out because only the price is on
+    the table. Any bargained outcome has to beat this number for the buyer.
     """
     return round(float((plan["unit_cost"] * plan["q_star"]).sum()), 2)
 
 
 def buyer_budget(apc: float, factor: float = BUDGET_FACTOR) -> float:
-    """Step 3 — the buyer's absolute budget limit B.
-
-    B = factor · APC with factor < 1, so the no-negotiation outcome violates
-    the budget by construction. The shortfall (APC − B) is the concession the
-    bargaining game must extract across the selected suppliers.
-    """
+    """The buyer's hard ceiling B, set below the baseline APC on purpose:
+    the status quo must be unaffordable or nobody has a reason to negotiate."""
     if factor >= 1.0:
-        raise ValueError(
-            f"factor must be < 1 to force a negotiation (got {factor})"
-        )
+        raise ValueError("factor must be < 1, otherwise no negotiation is forced")
     return round(apc * factor, 2)
 
 
-def frame_bargaining_problem(
-    engine: DemandOptimizationEngine | None = None,
-    w1: float = 0.6,
-    w2: float = 0.4,
-    budget_factor: float = BUDGET_FACTOR,
-) -> dict:
-    """Steps 1–3 in one call: the inputs every later game step builds on."""
+def frame_bargaining_problem(engine=None, w1=0.6, w2=0.4,
+                             budget_factor=BUDGET_FACTOR) -> dict:
     engine, plan = ingest_stage1(engine, w1, w2)
     apc = baseline_apc(plan)
     budget = buyer_budget(apc, budget_factor)
     return {
         "engine": engine,
-        "plan": plan,                       # q_k* per selected supplier
-        "baseline_apc": apc,                # cost of not negotiating
-        "budget": budget,                   # hard ceiling B < APC
+        "plan": plan,
+        "baseline_apc": apc,
+        "budget": budget,
         "required_concession": round(apc - budget, 2),
         "demand": engine.demand_dist,
     }
 
 
 if __name__ == "__main__":
-    print("Stage 2 — Nash bargaining game: framing the negotiation\n")
-
     setup = frame_bargaining_problem()
     plan = setup["plan"]
 
-    print(f"Negotiation table ({len(plan)} selected suppliers, "
-          f"D = {setup['demand']['D']:,.0f} units):\n")
+    print(f"{len(plan)} suppliers at the table, "
+          f"D = {setup['demand']['D']:,.0f} units\n")
     print(plan.to_string(index=False))
-
-    print(f"\nBaseline APC (no negotiation): ${setup['baseline_apc']:>12,.2f}")
-    print(f"Buyer's budget B ({BUDGET_FACTOR:.0%} of APC): "
-          f"${setup['budget']:>12,.2f}")
-    print(f"Required concession (APC − B): ${setup['required_concession']:>12,.2f}")
-    print("\nThe status quo exceeds the budget by construction — the gap is "
-          "what the\nbargaining game must close through per-supplier price "
-          "concessions.")
+    print(f"\nbaseline APC : ${setup['baseline_apc']:,.2f}")
+    print(f"budget B     : ${setup['budget']:,.2f}  "
+          f"({BUDGET_FACTOR:.0%} of baseline)")
+    print(f"gap to close : ${setup['required_concession']:,.2f}")
