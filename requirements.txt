@@ -3,3 +3,4 @@ pulp>=2.7
 pandas>=1.5
 numpy>=1.23
 prophet>=1.1
+matplotlib>=3.7

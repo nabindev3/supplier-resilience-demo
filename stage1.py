@@ -1,8 +1,7 @@
 """Stage 1 optimiser — forecast-driven supplier selection & order allocation.
 
-Assembles the Stage-1 mixed-integer program in the order the modelling actually
-happens. Each step is a discrete, inspectable method so the model can be built
-(and reviewed) incrementally:
+Builds and solves the Stage-1 mixed-integer program in the order the modelling
+actually happens:
 
   1. Demand distribution  — annual requirement D and its confidence band, from
      the Prophet forecast (`forecast.annual_demand`).
@@ -11,9 +10,19 @@ happens. Each step is a discrete, inspectable method so the model can be built
   3. PuLP environment      — a cost-minimising `LpProblem`.
   4. Decision variables    — binary y_k (is supplier k selected?) and continuous
      q_k (units ordered from supplier k).
+  5. Objectives            — Z1 (total annual cost: purchasing + holding +
+     setup) and Z2 (sum of DEA efficiency over selected suppliers).
+  6. Global criterion      — Z1 and Z2 combined into one weighted objective
+     with adjustable weights w1 (cost) and w2 (efficiency), each objective
+     normalised by its ideal value so the weights are comparable.
+  7. Strict constraints    — Σ q_k = D (demand met exactly) and
+     q_k ≤ capacity_k · y_k (nobody exceeds capacity; ordering links selection).
+  8. Solve + risk sweep    — CBC finds q_k*; a sweep over 10 (w1, w2) combos
+     from cost-driven to efficiency-driven traces the Pareto frontier.
 
-The objective and constraints layer onto this scaffold; this module owns the
-setup so every later step starts from a clean, known state.
+Mirrors the two-objective structure of Yousefi, Jahangoshai Rezaee & Solimanpur
+(2021) Stage 1 — cost minimisation fused with DEA efficiency — solved here with
+the weighted global criterion method instead of their linearised QP.
 """
 
 from __future__ import annotations
@@ -24,6 +33,13 @@ from suppliers_config import SUPPLIERS, dea_arrays, annual_capacity
 from dea import ccr_input_efficiency
 from forecast import annual_demand
 
+PARETO_PNG = "pareto_frontier.png"
+
+# Normalised objective coefficients are tiny (price / Z1* ~ 1e-6); scaling the
+# whole objective keeps them comfortably above CBC's numeric tolerances without
+# changing the argmin.
+OBJ_SCALE = 1_000.0
+
 
 def supplier_efficiency(suppliers: dict = SUPPLIERS) -> dict:
     """Step 2 — DEA efficiency per supplier (cost in, quality/delivery out)."""
@@ -31,11 +47,11 @@ def supplier_efficiency(suppliers: dict = SUPPLIERS) -> dict:
 
 
 class Stage1Model:
-    """Scaffold that builds the Stage-1 MILP one step at a time.
+    """The Stage-1 MILP, built one inspectable step at a time.
 
     Holds the demand target, the DEA efficiency scores, the PuLP problem, and
-    the decision variables, so later steps (objective, constraints, solve) all
-    operate on the same shared state.
+    the decision variables, so objective and constraints all operate on the
+    same shared state.
     """
 
     def __init__(
@@ -50,9 +66,12 @@ class Stage1Model:
         self.demand = demand
         self.efficiency = efficiency or {}
         self.periods = periods
-        # Annual capacity = per-day throughput x horizon, so it shares the
-        # yearly basis of the forecasted demand D (ready for the capacity step).
+        # Annual basis: per-day capacity and min-order scale with the horizon
+        # so they share the yearly basis of the forecasted demand D.
         self.capacity = annual_capacity(suppliers, periods)
+        self.min_order = {
+            k: s["min_order"] * periods for k, s in suppliers.items()
+        }
         self.prob: pulp.LpProblem | None = None
         self.y: dict[str, pulp.LpVariable] = {}   # binary    — supplier selection
         self.q: dict[str, pulp.LpVariable] = {}   # continuous — order quantity
@@ -77,57 +96,248 @@ class Stage1Model:
         }
         return self
 
+    # -- step 5a: cost objective Z1 ----------------------------------------
+    def z1_cost(self):
+        """Total annual supply-chain cost (linear expression).
 
-def build_stage1(demand: float | None = None) -> tuple[Stage1Model, dict]:
-    """Run steps 1–4 and return the scaffolded model plus the demand distribution.
+            Z1 = Σ_k  unit_cost_k · q_k          purchasing
+               + Σ_k  holding_cost_k · q_k / 2   holding (average cycle stock:
+                                                  half the annual order quantity
+                                                  is carried on average)
+               + Σ_k  setup_cost_k · y_k         setup / contracting (fixed,
+                                                  incurred once if selected)
+        """
+        s = self.suppliers
+        purchasing = pulp.lpSum(s[k]["unit_cost"] * self.q[k] for k in self.names)
+        holding = pulp.lpSum(s[k]["holding_cost"] * self.q[k] * 0.5 for k in self.names)
+        setup = pulp.lpSum(s[k]["setup_cost"] * self.y[k] for k in self.names)
+        return purchasing + holding + setup
 
-    Pass `demand` to override the forecast (e.g. to size against D_lower/D_upper);
-    otherwise the expected annual demand D drives the model.
-    """
-    dist = annual_demand()
-    target = dist["D"] if demand is None else demand
-    eff = supplier_efficiency()
-    model = (
-        Stage1Model(SUPPLIERS, target, eff, periods=dist["horizon_days"])
+    # -- step 5b: efficiency objective Z2 ----------------------------------
+    def z2_efficiency(self):
+        """Sum of DEA efficiency scores over the *selected* suppliers.
+
+            Z2 = Σ_k  eff_k · y_k    (maximise)
+
+        The min-order linking constraint stops Z2 from collecting "free"
+        efficiency points: selecting a supplier commits real order volume.
+        """
+        return pulp.lpSum(self.efficiency[k] * self.y[k] for k in self.names)
+
+    # -- step 6: global criterion (weighted, normalised) -------------------
+    def set_global_criterion(
+        self,
+        w1: float,
+        w2: float,
+        z1_ideal: float,
+        z2_ideal: float,
+        z1_nadir: float,
+        z2_nadir: float,
+    ) -> "Stage1Model":
+        """Combine Z1 and Z2 into one objective via the global criterion method.
+
+            minimise  w1 · (Z1 − Z1*) / (Z1ⁿ − Z1*)
+                    + w2 · (Z2* − Z2) / (Z2* − Z2ⁿ)
+
+        Each term is the deviation from that objective's ideal value (Z1* =
+        minimum cost, Z2* = maximum efficiency sum), normalised by the
+        objective's *range* across the Pareto set (ideal → nadir). Range
+        normalisation maps both deviations onto [0, 1], so w1 and w2 sweep the
+        frontier evenly — with ideal-value normalisation the objective with the
+        proportionally wider range would dominate at almost any weight.
+        """
+        z1_range = max(z1_nadir - z1_ideal, 1e-9)
+        z2_range = max(z2_ideal - z2_nadir, 1e-9)
+        deviation = (
+            w1 * (self.z1_cost() - z1_ideal) * (1.0 / z1_range)
+            + w2 * (z2_ideal - self.z2_efficiency()) * (1.0 / z2_range)
+        )
+        self.prob += OBJ_SCALE * deviation
+        return self
+
+    # -- step 7: strict constraints -----------------------------------------
+    def add_constraints(self) -> "Stage1Model":
+        """Hard boundaries of the allocation.
+
+            Σ_k q_k = D                          demand met exactly
+            q_k ≤ capacity_k · y_k               capacity + selection linking
+            q_k ≥ min_order_k · y_k              a selected supplier gets real
+                                                 volume (no free Z2 points)
+        """
+        self.prob += (
+            pulp.lpSum(self.q[k] for k in self.names) == self.demand,
+            "demand_balance",
+        )
+        for k in self.names:
+            self.prob += self.q[k] <= self.capacity[k] * self.y[k], f"cap_{k}"
+            self.prob += self.q[k] >= self.min_order[k] * self.y[k], f"minq_{k}"
+        return self
+
+    # -- step 8: execute the solver -----------------------------------------
+    def solve(self) -> dict:
+        """Run CBC and extract the optimal allocation q_k* and selection y_k*."""
+        self.prob.solve(pulp.PULP_CBC_CMD(msg=0))
+        alloc = {k: round(self.q[k].value() or 0.0, 1) for k in self.names}
+        selected = [k for k in self.names if (self.y[k].value() or 0) > 0.5]
+        s = self.suppliers
+        purchasing = sum(s[k]["unit_cost"] * alloc[k] for k in self.names)
+        holding = sum(s[k]["holding_cost"] * alloc[k] * 0.5 for k in self.names)
+        setup = sum(s[k]["setup_cost"] for k in selected)
+        return {
+            "status": pulp.LpStatus[self.prob.status],
+            "allocation": alloc,
+            "selected": selected,
+            "Z1_cost": round(purchasing + holding + setup, 2),
+            "Z1_breakdown": {
+                "purchasing": round(purchasing, 2),
+                "holding": round(holding, 2),
+                "setup": round(setup, 2),
+            },
+            "Z2_efficiency": round(
+                sum(self.efficiency[k] for k in selected), 4
+            ),
+        }
+
+
+def _fresh_model(demand: float, eff: dict, periods: int) -> Stage1Model:
+    """Steps 3, 4, 7 — a constrained model with variables, no objective yet."""
+    return (
+        Stage1Model(SUPPLIERS, demand, eff, periods)
         .init_problem()
         .define_variables()
+        .add_constraints()
     )
-    return model, dist
+
+
+def anchor_points(demand: float, eff: dict, periods: int) -> dict:
+    """Solve each objective alone to anchor the global criterion.
+
+    Ideal points (best case per objective):
+        Z1* — minimum achievable cost (efficiency ignored).
+        Z2* — maximum achievable efficiency sum (cost ignored).
+    Nadir points (worst value each objective takes across the Pareto set),
+    found lexicographically:
+        Z2ⁿ — the efficiency sum of the pure cost-minimal plan.
+        Z1ⁿ — the cheapest cost that still achieves Z2* (re-solve min Z1
+              with Σ eff_k·y_k ≥ Z2* pinned).
+    """
+    m1 = _fresh_model(demand, eff, periods)
+    m1.prob += m1.z1_cost()
+    r1 = m1.solve()
+    z1_star, z2_nadir = r1["Z1_cost"], r1["Z2_efficiency"]
+
+    m2 = _fresh_model(demand, eff, periods)
+    m2.prob += -m2.z2_efficiency()          # LpMinimize, so negate to maximise
+    z2_star = m2.solve()["Z2_efficiency"]
+
+    m3 = _fresh_model(demand, eff, periods)
+    m3.prob += m3.z2_efficiency() >= z2_star - 1e-6, "pin_z2_ideal"
+    m3.prob += m3.z1_cost()
+    z1_nadir = m3.solve()["Z1_cost"]
+
+    return {
+        "z1_ideal": z1_star,
+        "z2_ideal": z2_star,
+        "z1_nadir": z1_nadir,
+        "z2_nadir": z2_nadir,
+    }
+
+
+def solve_weighted(
+    w1: float, w2: float,
+    demand: float, eff: dict, periods: int,
+    anchors: dict,
+) -> dict:
+    """One global-criterion solve at a given (w1, w2)."""
+    model = _fresh_model(demand, eff, periods).set_global_criterion(
+        w1, w2,
+        anchors["z1_ideal"], anchors["z2_ideal"],
+        anchors["z1_nadir"], anchors["z2_nadir"],
+    )
+    result = model.solve()
+    result["w1"], result["w2"] = round(w1, 3), round(w2, 3)
+    return result
+
+
+def risk_sweep(n: int = 10) -> dict:
+    """The full Stage-1 pipeline plus the risk sweep.
+
+    Forecasts D once, scores DEA once, anchors the ideal points, then sweeps n
+    (w1, w2) combinations from purely cost-driven (w1=1) to purely
+    efficiency-driven (w2=1), solving the global-criterion MILP at each point.
+    """
+    dist = annual_demand()
+    eff = supplier_efficiency()
+    periods = dist["horizon_days"]
+    anchors = anchor_points(dist["D"], eff, periods)
+
+    runs = []
+    for i in range(n):
+        w2 = i / (n - 1)
+        w1 = 1.0 - w2
+        runs.append(solve_weighted(w1, w2, dist["D"], eff, periods, anchors))
+    return {"demand": dist, "efficiency": eff, **anchors, "runs": runs}
+
+
+def plot_pareto(sweep: dict, path: str = PARETO_PNG) -> str:
+    """Visualise the cost-vs-efficiency trade-off curve from the risk sweep."""
+    import matplotlib
+    matplotlib.use("Agg")                    # headless: render straight to file
+    import matplotlib.pyplot as plt
+
+    runs = sweep["runs"]
+    # Several weights can land on the same Pareto point; group them so each
+    # point gets one label ("w1=1.00-0.78") instead of overprinted text.
+    points: dict[tuple, list[float]] = {}
+    for r in runs:
+        points.setdefault((r["Z1_cost"], r["Z2_efficiency"]), []).append(r["w1"])
+
+    cost = [z1 / 1e6 for z1, _ in points]
+    effs = [z2 for _, z2 in points]
+
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    ax.plot(cost, effs, "o-", color="#1f77b4", linewidth=1.5, markersize=7)
+    for ((z1, z2), weights) in points.items():
+        label = (f"w1={max(weights):.2f}" if len(weights) == 1
+                 else f"w1={max(weights):.2f}–{min(weights):.2f}")
+        ax.annotate(
+            label, (z1 / 1e6, z2),
+            textcoords="offset points", xytext=(8, -4), fontsize=8,
+        )
+    ax.set_xlabel("Z1 — total annual cost ($M)")
+    ax.set_ylabel("Z2 — Σ DEA efficiency of selected suppliers")
+    ax.set_title(
+        "Stage 1 Pareto frontier: cost vs supplier-base efficiency\n"
+        f"(D = {sweep['demand']['D']:,.0f} units, global criterion sweep)"
+    )
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
 
 
 if __name__ == "__main__":
     print("Stage 1 — forecast-driven supplier selection & order allocation\n")
 
-    model, dist = build_stage1()
+    sweep = risk_sweep(n=10)
+    dist = sweep["demand"]
 
-    # 1) demand distribution
-    print(f"1) Demand distribution (Prophet, next {dist['horizon_days']} days)")
-    print(f"   D (expected) : {dist['D']:>12,.0f} units")
-    print(f"   90% interval : {dist['D_lower']:>12,.0f} .. {dist['D_upper']:,.0f} units")
-    print(f"   uncertainty  : ±{(dist['D_upper'] - dist['D_lower']) / 2:>10,.0f} units\n")
+    print(f"Demand D = {dist['D']:,.0f} units "
+          f"(90% interval {dist['D_lower']:,.0f} .. {dist['D_upper']:,.0f})")
+    print(f"Anchors: Z1 ${sweep['z1_ideal']:,.0f} (ideal) .. "
+          f"${sweep['z1_nadir']:,.0f} (nadir)   "
+          f"Z2 {sweep['z2_nadir']:.3f} (nadir) .. "
+          f"{sweep['z2_ideal']:.3f} (ideal)\n")
 
-    # 2) DEA efficiency
-    print("2) DEA efficiency (cost in -> quality/delivery out)")
-    for k, score in model.efficiency.items():
-        flag = "  <- efficient frontier" if score >= 0.999 else ""
-        print(f"   {k}: {score:.3f}{flag}")
-    print()
+    hdr = (f"{'w1':>5} {'w2':>5} {'Z1 cost ($)':>14} {'Z2 eff':>7} "
+           f"{'#sup':>5}  selected")
+    print(hdr)
+    print("-" * (len(hdr) + 18))
+    for r in sweep["runs"]:
+        print(f"{r['w1']:>5.2f} {r['w2']:>5.2f} {r['Z1_cost']:>14,.0f} "
+              f"{r['Z2_efficiency']:>7.3f} {len(r['selected']):>5}  "
+              f"{', '.join(r['selected'])}")
 
-    # 3) PuLP environment
-    sense = "minimize" if model.prob.sense == pulp.LpMinimize else "maximize"
-    print("3) PuLP environment")
-    print(f"   problem : {model.prob.name}")
-    print(f"   sense   : {sense} (cost)\n")
-
-    # 4) decision variables
-    print("4) Decision variables")
-    print(f"   binary    y_k : {len(model.y):>2}  ({', '.join(model.y)})")
-    print(f"   continuous q_k: {len(model.q):>2}  ({', '.join(model.q)})\n")
-
-    annual_cap = sum(model.capacity.values())
-    print(f"Capacity basis : {model.periods}-day horizon -> "
-          f"{annual_cap:,.0f} annual units of capacity")
-    print(f"               : demand D = {model.demand:,.0f}  "
-          f"({'feasible' if annual_cap >= model.demand else 'INFEASIBLE'} "
-          f"vs capacity)\n")
-    print("Scaffold ready — objective and constraints layer on top next.")
+    png = plot_pareto(sweep)
+    print(f"\nPareto frontier saved -> {png}")

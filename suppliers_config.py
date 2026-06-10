@@ -12,7 +12,10 @@ the optimisation needs:
     delivery_time  lead time in days
     quality        quality score 0–100                — DEA output (maximise)
     on_time        on-time delivery %                 — DEA output (maximise)
-    min_order      minimum order quantity if the supplier is used at all
+    setup_cost     annual fixed cost ($) of engaging the supplier at all
+                   (contracting, onboarding, audits) — incurred once if y_k = 1
+    min_order      minimum order quantity (units/day) if the supplier is used;
+                   scales with the horizon like capacity
 
 This is the richer of the two catalogues in the repo: `data.py` holds the
 original 6-supplier DEA case from Yousefi et al. (2021); this file is the
@@ -27,16 +30,16 @@ from __future__ import annotations
 # name -> metrics. Costs in $, capacity/min_order in units, time in days,
 # defect_rate as a fraction in [0, 1].
 SUPPLIERS: dict[str, dict] = {
-    "S01": {"capacity": 1200, "unit_cost":  8.00, "holding_cost": 0.90, "defect_rate": 0.040, "delivery_time": 14, "quality": 88, "on_time": 84, "min_order": 100},
-    "S02": {"capacity":  900, "unit_cost":  8.50, "holding_cost": 0.85, "defect_rate": 0.030, "delivery_time": 12, "quality": 90, "on_time": 87, "min_order":  80},
-    "S03": {"capacity":  500, "unit_cost":  9.00, "holding_cost": 0.70, "defect_rate": 0.022, "delivery_time":  9, "quality": 93, "on_time": 91, "min_order":  50},
-    "S04": {"capacity":  650, "unit_cost":  9.50, "holding_cost": 0.75, "defect_rate": 0.018, "delivery_time": 10, "quality": 94, "on_time": 90, "min_order":  60},
-    "S05": {"capacity":  400, "unit_cost": 10.00, "holding_cost": 0.60, "defect_rate": 0.015, "delivery_time":  7, "quality": 95, "on_time": 94, "min_order":  50},
-    "S06": {"capacity":  350, "unit_cost": 10.50, "holding_cost": 0.55, "defect_rate": 0.012, "delivery_time":  6, "quality": 96, "on_time": 95, "min_order":  40},
-    "S07": {"capacity":  300, "unit_cost": 11.50, "holding_cost": 0.50, "defect_rate": 0.008, "delivery_time":  5, "quality": 97, "on_time": 96, "min_order":  40},
-    "S08": {"capacity":  550, "unit_cost":  9.25, "holding_cost": 0.72, "defect_rate": 0.020, "delivery_time": 11, "quality": 93, "on_time": 89, "min_order":  60},
-    "S09": {"capacity":  800, "unit_cost":  8.75, "holding_cost": 0.80, "defect_rate": 0.028, "delivery_time": 13, "quality": 91, "on_time": 85, "min_order":  80},
-    "S10": {"capacity":  250, "unit_cost": 12.00, "holding_cost": 0.48, "defect_rate": 0.006, "delivery_time":  4, "quality": 98, "on_time": 98, "min_order":  30},
+    "S01": {"capacity": 1200, "unit_cost":  8.00, "holding_cost": 0.90, "defect_rate": 0.040, "delivery_time": 14, "quality": 88, "on_time": 84, "setup_cost": 5000, "min_order": 100},
+    "S02": {"capacity":  900, "unit_cost":  8.50, "holding_cost": 0.85, "defect_rate": 0.030, "delivery_time": 12, "quality": 90, "on_time": 87, "setup_cost": 4500, "min_order":  80},
+    "S03": {"capacity":  500, "unit_cost":  9.00, "holding_cost": 0.70, "defect_rate": 0.022, "delivery_time":  9, "quality": 93, "on_time": 91, "setup_cost": 3500, "min_order":  50},
+    "S04": {"capacity":  650, "unit_cost":  9.50, "holding_cost": 0.75, "defect_rate": 0.018, "delivery_time": 10, "quality": 94, "on_time": 90, "setup_cost": 3800, "min_order":  60},
+    "S05": {"capacity":  400, "unit_cost": 10.00, "holding_cost": 0.60, "defect_rate": 0.015, "delivery_time":  7, "quality": 95, "on_time": 94, "setup_cost": 3000, "min_order":  50},
+    "S06": {"capacity":  350, "unit_cost": 10.50, "holding_cost": 0.55, "defect_rate": 0.012, "delivery_time":  6, "quality": 96, "on_time": 95, "setup_cost": 2800, "min_order":  40},
+    "S07": {"capacity":  300, "unit_cost": 11.50, "holding_cost": 0.50, "defect_rate": 0.008, "delivery_time":  5, "quality": 97, "on_time": 96, "setup_cost": 2500, "min_order":  40},
+    "S08": {"capacity":  550, "unit_cost":  9.25, "holding_cost": 0.72, "defect_rate": 0.020, "delivery_time": 11, "quality": 93, "on_time": 89, "setup_cost": 3600, "min_order":  60},
+    "S09": {"capacity":  800, "unit_cost":  8.75, "holding_cost": 0.80, "defect_rate": 0.028, "delivery_time": 13, "quality": 91, "on_time": 85, "setup_cost": 4200, "min_order":  80},
+    "S10": {"capacity":  250, "unit_cost": 12.00, "holding_cost": 0.48, "defect_rate": 0.006, "delivery_time":  4, "quality": 98, "on_time": 98, "setup_cost": 2000, "min_order":  30},
 }
 
 # Total per-day pool throughput, useful for sanity-checking demand against what
