@@ -199,17 +199,21 @@ class Stage1Model:
         }
 
 
-def _fresh_model(demand: float, eff: dict, periods: int) -> Stage1Model:
+def _fresh_model(
+    demand: float, eff: dict, periods: int, suppliers: dict = SUPPLIERS
+) -> Stage1Model:
     """Steps 3, 4, 7 — a constrained model with variables, no objective yet."""
     return (
-        Stage1Model(SUPPLIERS, demand, eff, periods)
+        Stage1Model(suppliers, demand, eff, periods)
         .init_problem()
         .define_variables()
         .add_constraints()
     )
 
 
-def anchor_points(demand: float, eff: dict, periods: int) -> dict:
+def anchor_points(
+    demand: float, eff: dict, periods: int, suppliers: dict = SUPPLIERS
+) -> dict:
     """Solve each objective alone to anchor the global criterion.
 
     Ideal points (best case per objective):
@@ -221,16 +225,16 @@ def anchor_points(demand: float, eff: dict, periods: int) -> dict:
         Z1ⁿ — the cheapest cost that still achieves Z2* (re-solve min Z1
               with Σ eff_k·y_k ≥ Z2* pinned).
     """
-    m1 = _fresh_model(demand, eff, periods)
+    m1 = _fresh_model(demand, eff, periods, suppliers)
     m1.prob += m1.z1_cost()
     r1 = m1.solve()
     z1_star, z2_nadir = r1["Z1_cost"], r1["Z2_efficiency"]
 
-    m2 = _fresh_model(demand, eff, periods)
+    m2 = _fresh_model(demand, eff, periods, suppliers)
     m2.prob += -m2.z2_efficiency()          # LpMinimize, so negate to maximise
     z2_star = m2.solve()["Z2_efficiency"]
 
-    m3 = _fresh_model(demand, eff, periods)
+    m3 = _fresh_model(demand, eff, periods, suppliers)
     m3.prob += m3.z2_efficiency() >= z2_star - 1e-6, "pin_z2_ideal"
     m3.prob += m3.z1_cost()
     z1_nadir = m3.solve()["Z1_cost"]
@@ -247,9 +251,10 @@ def solve_weighted(
     w1: float, w2: float,
     demand: float, eff: dict, periods: int,
     anchors: dict,
+    suppliers: dict = SUPPLIERS,
 ) -> dict:
     """One global-criterion solve at a given (w1, w2)."""
-    model = _fresh_model(demand, eff, periods).set_global_criterion(
+    model = _fresh_model(demand, eff, periods, suppliers).set_global_criterion(
         w1, w2,
         anchors["z1_ideal"], anchors["z2_ideal"],
         anchors["z1_nadir"], anchors["z2_nadir"],
@@ -257,6 +262,98 @@ def solve_weighted(
     result = model.solve()
     result["w1"], result["w2"] = round(w1, 3), round(w2, 3)
     return result
+
+
+class DemandOptimizationEngine:
+    """The whole Stage-1 workflow behind one clean interface.
+
+    Encapsulates: Prophet demand distribution → DEA efficiency scoring →
+    ideal/nadir anchoring → global-criterion MILP solve, and exposes the
+    result as a structured DataFrame of the selected suppliers — the handoff
+    artifact downstream stages (e.g. the Stage-2 bargaining game) consume.
+
+        engine = DemandOptimizationEngine(w1=0.6, w2=0.4)
+        plan = engine.run()                  # dict (solver output)
+        df = engine.results_frame()          # DataFrame, one row per selected
+                                             # supplier with q_k*, costs, DEA
+
+    Expensive inputs (the Prophet fit, the DEA solves, the anchors) are
+    computed once on first use and cached, so re-solving at different weights
+    is cheap.
+    """
+
+    def __init__(
+        self,
+        suppliers: dict = SUPPLIERS,
+        w1: float = 0.6,
+        w2: float = 0.4,
+    ):
+        self.suppliers = suppliers
+        self.w1, self.w2 = w1, w2
+        self.demand_dist: dict | None = None     # D and its confidence band
+        self.efficiency: dict | None = None      # DEA score per supplier
+        self.anchors: dict | None = None         # ideal/nadir per objective
+        self.result: dict | None = None          # last solve
+
+    def _prepare(self) -> None:
+        """Forecast, score, and anchor once; cache for subsequent solves."""
+        if self.demand_dist is None:
+            self.demand_dist = annual_demand()
+        if self.efficiency is None:
+            self.efficiency = supplier_efficiency(self.suppliers)
+        if self.anchors is None:
+            self.anchors = anchor_points(
+                self.demand_dist["D"], self.efficiency,
+                self.demand_dist["horizon_days"], self.suppliers,
+            )
+
+    def run(self, w1: float | None = None, w2: float | None = None) -> dict:
+        """Execute the full pipeline; returns the solver result dict."""
+        if w1 is not None:
+            self.w1 = w1
+        if w2 is not None:
+            self.w2 = w2
+        self._prepare()
+        self.result = solve_weighted(
+            self.w1, self.w2,
+            self.demand_dist["D"], self.efficiency,
+            self.demand_dist["horizon_days"], self.anchors, self.suppliers,
+        )
+        return self.result
+
+    def results_frame(self) -> "pd.DataFrame":
+        """The selected suppliers as a structured DataFrame.
+
+        One row per *selected* supplier: optimal quantity q_k*, share of D,
+        unit economics, annual cost components, and the DEA score. Sorted by
+        allocated volume, ready to hand to Stage 2.
+        """
+        import pandas as pd
+
+        if self.result is None:
+            self.run()
+        r, s = self.result, self.suppliers
+        D = self.demand_dist["D"]
+        rows = []
+        for k in r["selected"]:
+            q = r["allocation"][k]
+            rows.append({
+                "supplier": k,
+                "q_star": q,
+                "share_of_D": round(q / D, 4),
+                "unit_cost": s[k]["unit_cost"],
+                "purchasing_cost": round(s[k]["unit_cost"] * q, 2),
+                "holding_cost": round(s[k]["holding_cost"] * q * 0.5, 2),
+                "setup_cost": s[k]["setup_cost"],
+                "dea_efficiency": self.efficiency[k],
+                "defect_rate": s[k]["defect_rate"],
+                "delivery_time": s[k]["delivery_time"],
+            })
+        return (
+            pd.DataFrame(rows)
+            .sort_values("q_star", ascending=False)
+            .reset_index(drop=True)
+        )
 
 
 def risk_sweep(n: int = 10) -> dict:
