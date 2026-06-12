@@ -12,9 +12,11 @@ from dea import ccr_input_efficiency
 from allocation import allocate, stress_test
 from fcm import FCM
 from fcm_data import CONCEPTS, weight_matrix
-from stage1 import DemandOptimizationEngine
+from stage1 import DemandOptimizationEngine, disruption_service
 from stage2 import (ingest_stage1, baseline_apc, buyer_budget,
-                    baseline_supplier_profits, profit_floors, buyer_utility)
+                    baseline_supplier_profits, profit_floors, buyer_utility,
+                    supplier_utilities, nash_objective, bargaining_weights,
+                    solve_nash)
 
 
 def _efficiency():
@@ -176,6 +178,86 @@ def test_stage2_buyer_utility_signs():
     assert abs(buyer_utility(list_prices, plan, budget) - (budget - apc)) < 1.0
 
 
+def _bargaining_table():
+    e = _stage1_engine()
+    _, plan = ingest_stage1(e)
+    plan = profit_floors(baseline_supplier_profits(plan))
+    apc = baseline_apc(plan)
+    return plan, buyer_budget(apc)
+
+
+def test_stage2_supplier_utilities_at_the_edges():
+    plan, budget = _bargaining_table()
+    floor_prices = dict(zip(plan["supplier"], plan["floor_price"]))
+    list_prices = dict(zip(plan["supplier"], plan["unit_cost"]))
+    # zero at the walk-away point (within price-rounding), SAP - G at list
+    for k, u in supplier_utilities(floor_prices, plan).items():
+        assert abs(u) < 50.0, f"{k} floor utility should be ~0, got {u}"
+    for _, r in plan.iterrows():
+        u = supplier_utilities(list_prices, plan)[r["supplier"]]
+        expected = r["baseline_profit"] - r["profit_floor"]
+        assert abs(u - expected) < 1.0
+
+
+def test_stage2_nash_objective_guards_the_walls():
+    import numpy as np
+    plan, budget = _bargaining_table()
+    lo = plan["floor_price"].to_numpy()
+    hi = plan["unit_cost"].to_numpy()
+    # infeasible: floors (a supplier utility is 0) and list (budget busted)
+    assert nash_objective(lo, plan, budget) == np.inf
+    assert nash_objective(hi, plan, budget) == np.inf
+    # feasible: just inside the wedge near the floors
+    assert np.isfinite(nash_objective(lo + 0.03 * (hi - lo), plan, budget))
+
+
+def test_stage2_nash_solution_splits_surplus_equally():
+    # utilities are linear in prices, so total surplus is fixed and the
+    # symmetric Nash product must split it equally among all players --
+    # a closed-form answer the numeric solve has to reproduce
+    plan, budget = _bargaining_table()
+    sol = solve_nash(plan, budget)
+    assert sol["converged"]
+    cost_at_floors = float((plan["floor_price"] * plan["q_star"]).sum())
+    share = (budget - cost_at_floors) / (len(plan) + 1)
+    assert abs(sol["buyer_utility"] - share) < 1.0
+    for u in sol["supplier_utilities"].values():
+        assert abs(u - share) < 1.0
+
+
+def test_stage2_weighted_nash_splits_by_bargaining_power():
+    # weighted version of the same closed form: with fixed total surplus the
+    # weighted Nash solution gives each player surplus * a_i / sum(a), so
+    # S01 (83% of the volume) must walk away with most of the supplier side
+    plan, budget = _bargaining_table()
+    w = bargaining_weights(plan)
+    sol = solve_nash(plan, budget, weights=w)
+    assert sol["converged"]
+    cost_at_floors = float((plan["floor_price"] * plan["q_star"]).sum())
+    surplus = budget - cost_at_floors
+    total_w = sum(w.values())
+    assert abs(sol["buyer_utility"] - surplus * w["buyer"] / total_w) < 1.0
+    for k, u in sol["supplier_utilities"].items():
+        assert abs(u - surplus * w[k] / total_w) < 1.0
+    # and the asymmetry is real: S01 gets more than the others combined
+    others = sum(u for k, u in sol["supplier_utilities"].items() if k != "S01")
+    assert sol["supplier_utilities"]["S01"] > others
+
+
+def test_disruption_service_rewards_diversification():
+    # the bridge between the halves: when S01 dies post-commitment, the
+    # efficiency-heavy (diversified) plan must keep more service than the
+    # cost-only plan that leaned on S01
+    e = _stage1_engine()
+    cost_run = e.run(w1=1.0, w2=0.0)
+    eff_run = e.run(w1=0.0, w2=1.0)
+    sweep = {"demand": e.demand_dist, "runs": [
+        {**cost_run, "w1": 1.0}, {**eff_run, "w1": 0.0}]}
+    rows = disruption_service(sweep, disruption={"S01": 0.0})
+    assert rows[1]["service"] > rows[0]["service"]
+    assert 0.0 <= rows[0]["service"] <= 1.0
+
+
 def test_stage2_budget_forces_a_gap():
     e = _stage1_engine()
     _, plan = ingest_stage1(e)
@@ -204,6 +286,11 @@ if __name__ == "__main__":
         test_stage2_supplier_profits_positive_and_consistent,
         test_stage2_floors_between_zero_and_baseline,
         test_stage2_buyer_utility_signs,
+        test_stage2_supplier_utilities_at_the_edges,
+        test_stage2_nash_objective_guards_the_walls,
+        test_stage2_nash_solution_splits_surplus_equally,
+        test_stage2_weighted_nash_splits_by_bargaining_power,
+        test_disruption_service_rewards_diversification,
         test_stage2_budget_forces_a_gap,
     ]
     for t in tests:
