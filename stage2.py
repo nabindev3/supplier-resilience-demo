@@ -7,7 +7,9 @@ no-negotiation baseline, and give the buyer a budget below that baseline so
 there is actually something to bargain over.
 """
 
+import numpy as np
 import pandas as pd
+from scipy.optimize import minimize
 
 from stage1 import DemandOptimizationEngine
 from suppliers_config import SUPPLIERS
@@ -111,10 +113,101 @@ def buyer_utility(prices: dict, plan: pd.DataFrame, budget: float) -> float:
     q_k* (stage 1 already fixed them, only the price is on the table).
     Positive means the deal fits the budget; at list prices it's negative by
     construction, which is the whole reason the buyer is negotiating.
+
+    Not rounded: this sits inside the Nash objective and the optimiser
+    shouldn't see cent-sized flat spots.
     """
     cost = float(sum(prices[k] * q for k, q
                      in zip(plan["supplier"], plan["q_star"])))
-    return round(budget - cost, 2)
+    return budget - cost
+
+
+def supplier_utilities(prices: dict, plan: pd.DataFrame) -> dict:
+    """U_k = negotiated profit - G_k, supplier k's gain over walking away.
+
+        U_k = (p_k - production_cost_k) * q_k* - G_k
+
+    Zero exactly at the floor price, SAP_k - G_k at list price.
+    """
+    return {
+        r["supplier"]: float(
+            (prices[r["supplier"]] - r["production_cost"]) * r["q_star"]
+            - r["profit_floor"])
+        for _, r in plan.iterrows()
+    }
+
+
+def bargaining_weights(plan: pd.DataFrame, buyer_weight: float = 1.0) -> dict:
+    """Bargaining power for the weighted Nash product.
+
+    The buyer is one side of every deal and gets `buyer_weight`; the
+    suppliers split a combined 1.0 in proportion to the volume they carry.
+    Volume share is the most defensible proxy here: losing S01 (83% of D)
+    hurts the buyer far more than losing S03 (3%), and that threat is
+    exactly what bargaining power is. Swap in DEA scores or anything else —
+    the solver doesn't care, only the proportional split does.
+    """
+    w = {"buyer": buyer_weight}
+    total = float(plan["share_of_D"].sum())
+    for _, r in plan.iterrows():
+        w[r["supplier"]] = float(r["share_of_D"]) / total
+    return w
+
+
+def nash_objective(price_vector: np.ndarray, plan: pd.DataFrame,
+                   budget: float, weights: dict | None = None) -> float:
+    """Negative log of the (weighted) Nash product, what scipy minimises.
+
+        maximise  U_B^a_B * prod_k U_k^a_k
+        ==  minimise  -(a_B log U_B + sum a_k log U_k)
+
+    `weights` maps "buyer" and each supplier to a bargaining power a_i;
+    None means the symmetric game (all 1).
+
+    Log form for two reasons: the raw product is around 1e21 here (five
+    utilities of 1e3-1e5 each), and log(u) -> -inf as any utility approaches
+    zero, so the optimiser gets pushed away from the walls of the bargaining
+    set without needing explicit constraints. Outside the set entirely (any
+    utility <= 0) it returns +inf.
+
+    `price_vector` follows the row order of `plan`. This is non-linear in
+    the prices, which is why stage 2 needs scipy.optimize.minimize where
+    stage 1 got away with PuLP.
+    """
+    prices = dict(zip(plan["supplier"], price_vector))
+    u = {"buyer": buyer_utility(prices, plan, budget),
+         **supplier_utilities(prices, plan)}
+    if min(u.values()) <= 0.0:
+        return np.inf
+    if weights is None:
+        weights = {k: 1.0 for k in u}
+    return -float(sum(weights[k] * np.log(u[k]) for k in u))
+
+
+def solve_nash(plan: pd.DataFrame, budget: float,
+               weights: dict | None = None) -> dict:
+    """Solve the bargaining game: prices in [floor, list] maximising the
+    Nash product.
+
+    Starts just inside the feasible wedge — the budget plane cuts the price
+    box very close to the floor side, so the box midpoint is NOT feasible
+    and a careless start hands the optimiser +inf.
+    """
+    lo = plan["floor_price"].to_numpy()
+    hi = plan["unit_cost"].to_numpy()
+    x0 = lo + 0.03 * (hi - lo)
+    res = minimize(nash_objective, x0, args=(plan, budget, weights),
+                   method="Nelder-Mead", bounds=list(zip(lo, hi)),
+                   options={"xatol": 1e-8, "fatol": 1e-12, "maxiter": 20000})
+    prices = dict(zip(plan["supplier"], res.x))
+    return {
+        "prices": {k: round(p, 4) for k, p in prices.items()},
+        "buyer_utility": round(buyer_utility(prices, plan, budget), 2),
+        "supplier_utilities": {k: round(u, 2) for k, u
+                               in supplier_utilities(prices, plan).items()},
+        "converged": bool(res.success),
+        "iterations": int(res.nit),
+    }
 
 
 def frame_bargaining_problem(engine=None, w1=0.6, w2=0.4,
@@ -156,7 +249,6 @@ if __name__ == "__main__":
           f"({BUDGET_FACTOR:.0%} of baseline)")
     print(f"gap to close : ${setup['required_concession']:,.2f}")
 
-    total_profit = sum(setup["supplier_profits"].values())
     print(f"\nper supplier: baseline profit SAP_k, walk-away floor G_k "
           f"({PROFIT_FLOOR_FACTOR:.0%}), floor price:")
     for _, r in plan.iterrows():
@@ -173,3 +265,34 @@ if __name__ == "__main__":
     print(f"\nbuyer utility U_B = B - total cost:")
     print(f"  at list prices  : ${buyer_utility(list_prices, plan, setup['budget']):>12,.2f}")
     print(f"  at floor prices : ${buyer_utility(floor_prices, plan, setup['budget']):>12,.2f}")
+
+    # the Nash solve. Utilities are all linear in prices, so U_B + sum(U_k)
+    # is a constant: the total surplus B - cost_at_floors. That gives both
+    # games a closed-form answer to check the optimiser against — the
+    # symmetric product splits the surplus equally, the weighted one splits
+    # it in proportion to bargaining power.
+    budget = setup["budget"]
+    surplus = budget - setup["cost_at_floors"]
+    n_players = len(plan) + 1
+    print(f"\ntotal surplus on the table: ${surplus:,.2f} "
+          f"-> ${surplus / n_players:,.2f} each if split {n_players} ways")
+
+    sym = solve_nash(plan, budget)
+    print(f"\nsymmetric Nash ({sym['iterations']} iterations, "
+          f"converged={sym['converged']}):")
+    print(f"  buyer keeps ${sym['buyer_utility']:,.2f} under budget")
+    for k in plan["supplier"]:
+        print(f"  {k}  price ${sym['prices'][k]:.4f}  ->  "
+              f"U ${sym['supplier_utilities'][k]:,.2f} above the floor")
+
+    # asymmetric: bargaining power by volume share. S01 carries 83% of D and
+    # negotiates like it; the buyer's weight matches the supplier side
+    # combined, so the buyer keeps half the surplus
+    w = bargaining_weights(plan)
+    asym = solve_nash(plan, budget, weights=w)
+    print(f"\nweighted Nash, power = volume share "
+          f"({asym['iterations']} iterations, converged={asym['converged']}):")
+    print(f"  buyer keeps ${asym['buyer_utility']:,.2f} under budget")
+    for k in plan["supplier"]:
+        print(f"  {k}  weight {w[k]:.3f}  price ${asym['prices'][k]:.4f}  ->  "
+              f"U ${asym['supplier_utilities'][k]:,.2f} above the floor")
