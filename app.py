@@ -57,7 +57,7 @@ with tab_alloc:
         "Outputs (maximise): quality, on-time %, capacity. Edit any cell."
     )
     df = pd.DataFrame(SUPPLIERS).T.reset_index().rename(columns={"index": "supplier"})
-    edited = st.data_editor(df, hide_index=True, use_container_width=True, key="suppliers")
+    edited = st.data_editor(df, hide_index=True, width="stretch", key="suppliers")
     suppliers = {
         row["supplier"]: {
             "price": float(row["price"]),
@@ -79,7 +79,7 @@ with tab_alloc:
         {"supplier": list(efficiency), "DEA efficiency": list(efficiency.values())}
     )
     c1, c2 = st.columns([1, 2])
-    c1.dataframe(eff_df, hide_index=True, use_container_width=True)
+    c1.dataframe(eff_df, hide_index=True, width="stretch")
     c2.bar_chart(eff_df.set_index("supplier"))
 
     cost_plan = allocate(suppliers, demand, efficiency, efficiency_weight=0.0)
@@ -149,7 +149,7 @@ with tab_fcm:
     )
 
     fcm = FCM(CONCEPTS, weight_matrix())
-    st.graphviz_chart(fcm.to_dot(), use_container_width=True)
+    st.graphviz_chart(fcm.to_dot(), width="stretch")
 
     st.markdown("#### What-if: activate one enabler and watch the system re-settle")
     ca, cb = st.columns([2, 1])
@@ -169,7 +169,7 @@ with tab_fcm:
             [(c, b, s, d) for c, (b, s, d) in result.items()],
             columns=["concept", "baseline", "scenario", "delta"],
         )
-        st.dataframe(delta_df, hide_index=True, use_container_width=True)
+        st.dataframe(delta_df, hide_index=True, width="stretch")
 
     st.caption(
         "Weights are expert-defined here; in the original papers a hybrid "
