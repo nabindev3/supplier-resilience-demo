@@ -13,7 +13,8 @@ from allocation import allocate, stress_test
 from fcm import FCM
 from fcm_data import CONCEPTS, weight_matrix
 from stage1 import DemandOptimizationEngine
-from stage2 import ingest_stage1, baseline_apc, buyer_budget
+from stage2 import (ingest_stage1, baseline_apc, buyer_budget,
+                    baseline_supplier_profits)
 
 
 def _efficiency():
@@ -127,6 +128,22 @@ def test_stage1_results_frame_consistent():
     assert abs(df["share_of_D"].sum() - 1.0) < 0.01
 
 
+def test_stage2_supplier_profits_positive_and_consistent():
+    e = _stage1_engine()
+    _, plan = ingest_stage1(e)
+    plan = baseline_supplier_profits(plan)
+    # every supplier must make money at list price, or they wouldn't be
+    # selling at it; and the game needs margin to bargain away
+    assert (plan["unit_margin"] > 0).all()
+    assert (plan["baseline_profit"] > 0).all()
+    expected = (plan["unit_cost"] - plan["production_cost"]) * plan["q_star"]
+    assert (abs(plan["baseline_profit"] - expected) < 1.0).all()
+    # the buyer's required concession has to fit inside the total margin
+    apc = baseline_apc(plan)
+    gap = apc - buyer_budget(apc)
+    assert plan["baseline_profit"].sum() > gap
+
+
 def test_stage2_budget_forces_a_gap():
     e = _stage1_engine()
     _, plan = ingest_stage1(e)
@@ -152,6 +169,7 @@ if __name__ == "__main__":
         test_stage1_weights_actually_trade_off,
         test_stage1_min_order_link_no_free_selections,
         test_stage1_results_frame_consistent,
+        test_stage2_supplier_profits_positive_and_consistent,
         test_stage2_budget_forces_a_gap,
     ]
     for t in tests:

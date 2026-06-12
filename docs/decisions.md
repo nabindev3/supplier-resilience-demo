@@ -71,6 +71,17 @@ construction; the gap (about $215k at the default weights) is the concession
 the bargaining game has to extract. The 0.95 is arbitrary and adjustable —
 the point is only that it's strictly below 1.
 
+## Supplier margins widen toward the premium end
+
+Stage 2 needs each supplier's production cost to compute their baseline
+profit (SAP_k = margin × q*), which is what the bargaining game divides up.
+I set the margins on a gradient — about 9% for the volume vendors (S01, S02,
+S09) up to ~14% for the premium ones (S07, S10) — because uniform margins
+make the game boring: everyone concedes proportionally. With a gradient, the
+high-volume thin-margin suppliers have little room per unit but huge volume,
+while the premium suppliers have room per unit but little volume at stake,
+so the negotiation outcome isn't obvious in advance.
+
 ## Synthetic data left imperfect
 
 `demand_data.py` drops ~1% of days at random plus a ~10-day hole. Partly
