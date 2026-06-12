@@ -15,11 +15,13 @@ draws the resulting trade-off curve.
 import pandas as pd
 import pulp
 
+from allocation import stress_test
 from suppliers_config import SUPPLIERS, dea_arrays, annual_capacity
 from dea import ccr_input_efficiency
 from forecast import annual_demand
 
 PARETO_PNG = "pareto_frontier.png"
+RESILIENCE_PNG = "resilience_frontier.png"
 
 # normalised objective coefficients come out tiny (unit_cost / Z1* is around
 # 1e-6), scale up so CBC's tolerances don't swallow them
@@ -242,6 +244,66 @@ def risk_sweep(n: int = 10) -> dict:
     return {"demand": dist, "efficiency": eff, **anchors, "runs": runs}
 
 
+def disruption_service(sweep: dict, disruption: dict | None = None) -> list[dict]:
+    """Stress every plan on the frontier with the same disruption.
+
+    This is what connects the two halves of the project: the weight sweep
+    prices diversification (Z1 vs Z2), and the stress test shows what that
+    diversification actually buys when a supplier fails *after* orders are
+    committed. Default scenario: S01 fully down — the cheap supplier that
+    every cost-leaning plan leans on hardest.
+
+    Returns one row per sweep run with the realised service level added.
+    """
+    disruption = disruption or {"S01": 0.0}
+    periods = sweep["demand"]["horizon_days"]
+    D = sweep["demand"]["D"]
+    annual = {k: {"capacity": s["capacity"] * periods}
+              for k, s in SUPPLIERS.items()}
+    rows = []
+    for r in sweep["runs"]:
+        hit = stress_test(annual, D, r["allocation"], disruption)
+        rows.append({
+            "w1": r["w1"],
+            "Z1_cost": r["Z1_cost"],
+            "Z2_efficiency": r["Z2_efficiency"],
+            "n_suppliers": len(r["selected"]),
+            "service": hit["realized_service_level"],
+        })
+    return rows
+
+
+def plot_resilience(rows: list[dict], disruption_label: str = "S01 down",
+                    path: str = RESILIENCE_PNG) -> str:
+    """Cost vs realised service under disruption — the third axis."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    points = {}
+    for r in rows:
+        points.setdefault((r["Z1_cost"], r["service"], r["n_suppliers"]),
+                          []).append(r["w1"])
+
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    cost = [z1 / 1e6 for z1, _, _ in points]
+    serv = [s * 100 for _, s, _ in points]
+    ax.plot(cost, serv, "o-", color="#d62728", linewidth=1.5, markersize=7)
+    for (z1, s, n), weights in points.items():
+        label = (f"w1={max(weights):.2f}" if len(weights) == 1
+                 else f"w1={max(weights):.2f}-{min(weights):.2f}")
+        ax.annotate(f"{label} ({n} sup.)", (z1 / 1e6, s * 100),
+                    textcoords="offset points", xytext=(8, -4), fontsize=8)
+    ax.set_xlabel("Z1, total annual cost ($M)")
+    ax.set_ylabel(f"realised service when {disruption_label} (%)")
+    ax.set_title("What diversification buys: cost vs service under disruption")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 def plot_pareto(sweep: dict, path: str = PARETO_PNG) -> str:
     import matplotlib
     matplotlib.use("Agg")
@@ -282,9 +344,12 @@ if __name__ == "__main__":
     print(f"Z1 ideal ${sweep['z1_ideal']:,.0f}, nadir ${sweep['z1_nadir']:,.0f}; "
           f"Z2 ideal {sweep['z2_ideal']:.3f}, nadir {sweep['z2_nadir']:.3f}\n")
 
-    for r in sweep["runs"]:
+    # third axis: what each plan is worth when S01 fails post-commitment
+    hits = disruption_service(sweep)
+    for r, h in zip(sweep["runs"], hits):
         print(f"w1={r['w1']:.2f}  Z1 ${r['Z1_cost']:>12,.0f}  "
-              f"Z2 {r['Z2_efficiency']:.3f}  "
+              f"Z2 {r['Z2_efficiency']:.3f}  service {h['service']:>5.0%}  "
               f"{len(r['selected'])} suppliers: {', '.join(r['selected'])}")
 
     print(f"\nwrote {plot_pareto(sweep)}")
+    print(f"wrote {plot_resilience(hits)}")
