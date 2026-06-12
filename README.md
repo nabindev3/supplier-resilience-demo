@@ -40,6 +40,13 @@ ideal value makes the sweep collapse to about 3 distinct solutions, because
 cost only moves ~5% off its ideal while the efficiency sum moves ~80%. You
 have to normalise by the ideal-to-nadir *range* to get an even sweep.
 
+`disruption_service()` then runs every plan on that frontier through the
+stress test with S01 (the cheap workhorse every cost-leaning plan relies on)
+knocked out after orders are committed. That adds the third axis the 2021
+model can't draw: the cost-only plan keeps 17% service, the fully
+diversified one 34%, and the curve between them prices the insurance
+(`resilience_frontier.png`).
+
 **Resilience extension** (`allocation.py`). A share cap and a minimum
 supplier count force diversification, and `stress_test()` knocks out a
 supplier after orders are committed. With the default 6-supplier data,
@@ -53,10 +60,16 @@ demand of 1,000 units and the high-volume supplier S6 failing:
 So a 3% cost premium doubles realised service under that disruption. That
 trade-off is invisible to a deterministic model, which is the whole point.
 
-**Stage 2 framing** (`stage2.py`). The setup for the bargaining game: pulls
-q* from Stage 1, computes the annual purchasing cost at list prices, and sets
-the buyer's budget at 95% of that so a negotiation is actually forced. The
-Nash solution itself is not implemented yet.
+**Stage 2: Nash bargaining over price** (`stage2.py`). Pulls q* from Stage 1,
+prices the no-negotiation baseline, sets the buyer's budget at 95% of it (so
+a negotiation is forced), gives every supplier a walk-away profit floor, and
+then solves the bargaining game with scipy: prices in [floor, list]
+maximising the Nash product of all utilities. Because the utilities are
+linear in price, the symmetric game has a closed-form answer (equal split of
+the surplus) that the optimiser is tested against; the interesting version
+is the *weighted* game, where bargaining power follows volume share — S01
+carries 83% of the demand and walks away with 83% of the supplier-side
+surplus.
 
 **Fuzzy Cognitive Map** (`fcm.py`, `fcm_data.py`). A signed causal graph of
 resilience and sustainability enablers (blockchain traceability, supplier
@@ -100,8 +113,10 @@ python stage2.py         # bargaining-game setup on top of stage 1
 python test_model.py     # smoke tests
 ```
 
-The Prophet fit takes ~20s; stage1.py and stage2.py both refit it from the
-synthetic history (`demand_history.csv` is regenerated if missing).
+The first run fits Prophet on the synthetic history; the result is cached in
+`.annual_demand_cache.json` (keyed on a hash of the data), so subsequent runs
+of stage1.py and stage2.py are near-instant. `demand_history.csv` is
+regenerated if missing, which also invalidates the cache.
 
 ## Files
 
@@ -110,8 +125,8 @@ synthetic history (`demand_history.csv` is regenerated if missing).
 | `demand_data.py` | synthetic 5-year daily demand history |
 | `forecast.py` | Prophet fit, annual demand D with 90% interval |
 | `suppliers_config.py` | 10-supplier candidate pool for stage 1 |
-| `stage1.py` | DEA + multi-objective MILP, weight sweep, Pareto plot |
-| `stage2.py` | Nash bargaining setup (baseline cost, buyer budget) |
+| `stage1.py` | DEA + multi-objective MILP, weight sweep, Pareto + resilience plots |
+| `stage2.py` | Nash bargaining game over price (symmetric + volume-weighted, scipy) |
 | `data.py` | original 6-supplier case for the interactive demo |
 | `dea.py` | input-oriented CCR DEA, one LP per supplier |
 | `allocation.py` | allocation MILP + post-commit stress test |
@@ -132,14 +147,12 @@ synthetic history (`demand_history.csv` is regenerated if missing).
 
 Roughly in order:
 
-1. Finish Stage 2: per-supplier utility functions and disagreement points,
-   then solve the Nash product for the negotiated prices (non-linear, so
-   probably scipy rather than PuLP).
-2. Run each plan on the Pareto frontier through `stress_test()` — that adds
-   realised service under disruption as a third axis to the cost/efficiency
-   trade-off, which is the picture I actually want this project to end on.
-3. Replace the synthetic series with a public demand dataset (M5 or similar)
+1. Replace the synthetic series with a public demand dataset (M5 or similar)
    to see whether the pipeline survives contact with real data.
+2. Try other bargaining-power definitions in the weighted Nash game (DEA
+   efficiency, switching cost) and see how the negotiated prices move.
+3. Multi-supplier and partial disruption scenarios for the resilience sweep,
+   instead of the single S01-down case.
 4. Learn the FCM weights from scenario data instead of fixing them by hand
    (the full hybrid-learning loop from the 2022 paper).
 

@@ -95,6 +95,29 @@ is tight enough to be interesting. The two knobs (budget factor, floor
 factor) trade off against each other; `frame_bargaining_problem()` reports
 `bargaining_set_nonempty` so a bad combination is caught immediately.
 
+## Nash objective in log space, validated against a closed form
+
+The Nash product U_B · Π U_k is around 1e21 at these scales (five utilities
+of 1e3-1e5 each), useless for a numeric optimiser. Maximising the sum of
+logs is the same argmax and has a bonus: log(u) → −∞ as any utility hits
+zero, so the optimiser is repelled from the walls of the bargaining set
+without explicit constraints — only price bounds are needed.
+
+Two traps worth remembering. First, the midpoint of the price box is *not*
+a feasible start: the budget plane cuts the box very close to the floor
+side (gap $215k vs $15k of surplus), so the search has to start near the
+floors. Second, because all utilities are linear in prices, U_B + Σ U_k is
+constant (= B − cost at floors), which means the symmetric Nash solution is
+known in closed form — an equal split of the surplus among the n+1 players.
+That's the strongest test in the suite: the Nelder-Mead solve has to land
+on $3,090.30 for every player, and it does. The symmetric game's answer
+doesn't depend on q*, DEA scores or anything else, which makes it a
+validation tool rather than a result — the *weighted* game is the real one.
+Bargaining power follows volume share (losing 83% of your supply is a
+bigger threat than losing 3%), and the same closed-form logic still checks
+it: with fixed surplus the weighted solution gives each player
+surplus · a_i / Σa, which the optimiser reproduces to the cent.
+
 ## Synthetic data left imperfect
 
 `demand_data.py` drops ~1% of days at random plus a ~10-day hole. Partly
