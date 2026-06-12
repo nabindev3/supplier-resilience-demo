@@ -82,6 +82,19 @@ high-volume thin-margin suppliers have little room per unit but huge volume,
 while the premium suppliers have room per unit but little volume at stake,
 so the negotiation outcome isn't obvious in advance.
 
+## Profit floors at 40% of baseline profit
+
+Each supplier's walk-away point is G_k = 0.40 · SAP_k, proportional rather
+than absolute so the floors scale with how much each supplier has at stake.
+The 0.40 isn't free: the buyer must be able to afford every supplier sitting
+at their floor price, and with the budget at 95% of list cost that breaks
+just above factor ≈ 0.44 — the floor prices alone exceed B and the
+bargaining set goes empty. At 0.40 there's about $15k of genuinely
+negotiable surplus between "everyone at their floor" and the budget, which
+is tight enough to be interesting. The two knobs (budget factor, floor
+factor) trade off against each other; `frame_bargaining_problem()` reports
+`bargaining_set_nonempty` so a bad combination is caught immediately.
+
 ## Synthetic data left imperfect
 
 `demand_data.py` drops ~1% of days at random plus a ~10-day hole. Partly

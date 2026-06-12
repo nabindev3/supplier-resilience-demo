@@ -14,7 +14,7 @@ from fcm import FCM
 from fcm_data import CONCEPTS, weight_matrix
 from stage1 import DemandOptimizationEngine
 from stage2 import (ingest_stage1, baseline_apc, buyer_budget,
-                    baseline_supplier_profits)
+                    baseline_supplier_profits, profit_floors, buyer_utility)
 
 
 def _efficiency():
@@ -144,6 +144,38 @@ def test_stage2_supplier_profits_positive_and_consistent():
     assert plan["baseline_profit"].sum() > gap
 
 
+def test_stage2_floors_between_zero_and_baseline():
+    e = _stage1_engine()
+    _, plan = ingest_stage1(e)
+    plan = profit_floors(baseline_supplier_profits(plan))
+    # the floor must leave room to concede, but never pay below cost
+    assert (plan["profit_floor"] > 0).all()
+    assert (plan["profit_floor"] < plan["baseline_profit"]).all()
+    assert (plan["floor_price"] > plan["production_cost"]).all()
+    assert (plan["floor_price"] < plan["unit_cost"]).all()
+    try:
+        profit_floors(plan, factor=1.5)
+        assert False, "factor outside (0,1) should be rejected"
+    except ValueError:
+        pass
+
+
+def test_stage2_buyer_utility_signs():
+    e = _stage1_engine()
+    _, plan = ingest_stage1(e)
+    plan = profit_floors(baseline_supplier_profits(plan))
+    apc = baseline_apc(plan)
+    budget = buyer_budget(apc)
+    list_prices = dict(zip(plan["supplier"], plan["unit_cost"]))
+    floor_prices = dict(zip(plan["supplier"], plan["floor_price"]))
+    # list prices bust the budget by construction; floor prices must fit,
+    # otherwise the bargaining set is empty and there is no game to solve
+    assert buyer_utility(list_prices, plan, budget) < 0
+    assert buyer_utility(floor_prices, plan, budget) > 0
+    # and U_B at list prices is exactly B - APC
+    assert abs(buyer_utility(list_prices, plan, budget) - (budget - apc)) < 1.0
+
+
 def test_stage2_budget_forces_a_gap():
     e = _stage1_engine()
     _, plan = ingest_stage1(e)
@@ -170,6 +202,8 @@ if __name__ == "__main__":
         test_stage1_min_order_link_no_free_selections,
         test_stage1_results_frame_consistent,
         test_stage2_supplier_profits_positive_and_consistent,
+        test_stage2_floors_between_zero_and_baseline,
+        test_stage2_buyer_utility_signs,
         test_stage2_budget_forces_a_gap,
     ]
     for t in tests:
