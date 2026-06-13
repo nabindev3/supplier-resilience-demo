@@ -14,7 +14,7 @@ save?
 ## Background
 
 > Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). Supplier
-> selection and order allocation using two-stage hybrid supply chain model and
+> selection and order allocation using two stage hybrid supply chain model and
 > game-based order price. *Operational Research, 21*(1), 553-588.
 
 The original is a two-stage model: Stage 1 fuses a buyer/vendor coordination
@@ -25,7 +25,7 @@ keeps the recognisable Stage-1 structure and fills in both gaps.
 
 ## What's here
 
-**Forecast-driven Stage 1** (`demand_data.py`, `forecast.py`, `stage1.py`).
+**Forecast driven Stage 1** (`demand_data.py`, `forecast.py`, `stage1.py`).
 Instead of taking demand as given, I synthesise 5 years of daily demand
 (growth trend, weekly and yearly seasonality, noise), fit Prophet on it, and
 feed the annual forecast D into a MILP that picks suppliers and quantities.
@@ -41,15 +41,15 @@ cost only moves ~5% off its ideal while the efficiency sum moves ~80%. You
 have to normalise by the ideal-to-nadir *range* to get an even sweep.
 
 `disruption_service()` then runs every plan on that frontier through the
-stress test with S01 (the cheap workhorse every cost-leaning plan relies on)
+stress test with S01 (the cheap workhorse every cost leaning plan relies on)
 knocked out after orders are committed. That adds the third axis the 2021
-model can't draw: the cost-only plan keeps 17% service, the fully
+model can't draw: the cost only plan keeps 17% service, the fully
 diversified one 34%, and the curve between them prices the insurance
 (`resilience_frontier.png`).
 
 **Resilience extension** (`allocation.py`). A share cap and a minimum
 supplier count force diversification, and `stress_test()` knocks out a
-supplier after orders are committed. With the default 6-supplier data,
+supplier after orders are committed. With the default 6 supplier data,
 demand of 1,000 units and the high-volume supplier S6 failing:
 
 | Plan | Purchasing cost | Suppliers | Service when S6 fails |
@@ -61,14 +61,14 @@ So a 3% cost premium doubles realised service under that disruption. That
 trade-off is invisible to a deterministic model, which is the whole point.
 
 **Stage 2: Nash bargaining over price** (`stage2.py`). Pulls q* from Stage 1,
-prices the no-negotiation baseline, sets the buyer's budget at 95% of it (so
+prices the no negotiation baseline, sets the buyer's budget at 95% of it (so
 a negotiation is forced), gives every supplier a walk-away profit floor, and
 then solves the bargaining game with scipy (SLSQP, budget and floors as
 explicit constraints): prices in [floor, list] maximising the Nash product
 of all utilities. Because the utilities are linear in price, the symmetric
 game has a closed-form answer (equal split of the surplus) that the optimiser
 is tested against; the interesting version is the *weighted* game, where
-bargaining power follows volume share — S01 carries 83% of the demand and
+bargaining power follows volume share, S01 carries 83% of the demand and
 walks away with 83% of the supplier-side surplus. The whole step is wrapped
 in a `GameTheoryPricingEngine` that returns a before/after dashboard, the
 total savings ($222k, ~5%), and each supplier's profit sacrifice.
@@ -94,8 +94,8 @@ fcm_data.py ──► fcm.py ──────────────► app.p
 ```
 
 The two paths share `dea.py` and the same modelling ideas but different
-supplier pools: the Streamlit demo keeps the small 6-supplier case so every
-number is checkable by hand, the stage-1/2 pipeline uses the 10-supplier
+supplier pools: the Streamlit demo keeps the small 6 supplier case so every
+number is checkable by hand, the stage-1/2 pipeline uses the 10 supplier
 pool and forecasted demand.
 
 The reasoning behind the less obvious modelling choices (why range
@@ -141,11 +141,11 @@ regenerated if missing, which also invalidates the cache.
 - All data is synthetic. The Prophet model is fit on a series I generated, so
   it demonstrates the pipeline rather than predicting anything real.
 - DEA is plain CCR (constant returns to scale), no super-efficiency variant.
-- Single-period, single-supplier deterministic disruption. Scenario-based or
+- Single-period, single supplier deterministic disruption. Scenario-based or
   stochastic disruptions would be the natural next step.
 - The Stage-2 game uses transferable, risk-neutral utilities (linear in
   price), which is what makes the symmetric solution an exact equal split.
-  Concave/risk-averse utilities would be a more realistic — and genuinely
+  Concave/risk-averse utilities would be a more realistic and genuinely
   non-linear — extension.
 
 ## What's next
