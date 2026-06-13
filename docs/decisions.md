@@ -95,28 +95,40 @@ is tight enough to be interesting. The two knobs (budget factor, floor
 factor) trade off against each other; `frame_bargaining_problem()` reports
 `bargaining_set_nonempty` so a bad combination is caught immediately.
 
-## Nash objective in log space, validated against a closed form
+## Nash objective in log space, solved with constrained SLSQP
 
 The Nash product U_B · Π U_k is around 1e21 at these scales (five utilities
 of 1e3-1e5 each), useless for a numeric optimiser. Maximising the sum of
-logs is the same argmax and has a bonus: log(u) → −∞ as any utility hits
-zero, so the optimiser is repelled from the walls of the bargaining set
-without explicit constraints — only price bounds are needed.
+logs is the same argmax (log is monotonic) and turns the product into a sum
+the solver handles cleanly.
 
-Two traps worth remembering. First, the midpoint of the price box is *not*
+I first solved it with Nelder-Mead and a log barrier — let log(u) → −∞ at
+the walls of the bargaining set and the simplex stays inside on its own.
+That works but it's a penalty method standing in for constraints. The honest
+formulation states them: SLSQP with the budget (Σ p_k q_k ≤ B) and each
+profit floor ((p_k − prod_k)q_k ≥ G_k) as explicit inequality constraints,
+prices bounded to [floor, list]. SLSQP converges in ~10-20 iterations versus
+Nelder-Mead's ~190, and the constraints are now inspectable objects rather
+than a side effect of the objective. One numerical detail survives the
+switch: the utilities are clipped at 1e-9 inside the log so a line-search
+probe just outside the set returns a finite number instead of NaN. The
+optimum is strictly interior (every player keeps a positive share), so the
+clip never binds at the solution — it's purely a guard.
+
+Two facts worth remembering. First, the midpoint of the price box is *not*
 a feasible start: the budget plane cuts the box very close to the floor
-side (gap $215k vs $15k of surplus), so the search has to start near the
-floors. Second, because all utilities are linear in prices, U_B + Σ U_k is
-constant (= B − cost at floors), which means the symmetric Nash solution is
-known in closed form — an equal split of the surplus among the n+1 players.
-That's the strongest test in the suite: the Nelder-Mead solve has to land
-on $3,090.30 for every player, and it does. The symmetric game's answer
-doesn't depend on q*, DEA scores or anything else, which makes it a
-validation tool rather than a result — the *weighted* game is the real one.
-Bargaining power follows volume share (losing 83% of your supply is a
-bigger threat than losing 3%), and the same closed-form logic still checks
-it: with fixed surplus the weighted solution gives each player
-surplus · a_i / Σa, which the optimiser reproduces to the cent.
+side (gap $215k vs $15k of surplus), so the search starts near the floors.
+Second, because all utilities are linear in prices, U_B + Σ U_k is constant
+(= B − cost at floors), which means the symmetric Nash solution is known in
+closed form — an equal split of the surplus among the n+1 players. That's
+the strongest test in the suite: the solve has to land on $3,090.30 for
+every player, and it does. The symmetric game's answer doesn't depend on
+q*, DEA scores or anything else, which makes it a validation tool rather
+than a result — the *weighted* game is the real one. Bargaining power
+follows volume share (losing 83% of your supply is a bigger threat than
+losing 3%), and the same closed-form logic still checks it: with fixed
+surplus the weighted solution gives each player surplus · a_i / Σa, which
+the optimiser reproduces to the cent.
 
 ## Synthetic data left imperfect
 

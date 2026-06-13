@@ -7,6 +7,8 @@ The stage-1 tests inject a fixed demand instead of running the Prophet fit,
 so the whole file stays fast.
 """
 
+import pandas as pd
+
 from data import SUPPLIERS, DEFAULT_DEMAND, dea_arrays
 from dea import ccr_input_efficiency
 from allocation import allocate, stress_test
@@ -16,7 +18,9 @@ from stage1 import DemandOptimizationEngine, disruption_service
 from stage2 import (ingest_stage1, baseline_apc, buyer_budget,
                     baseline_supplier_profits, profit_floors, buyer_utility,
                     supplier_utilities, nash_objective, bargaining_weights,
-                    solve_nash)
+                    solve_nash, budget_constraint, floor_constraints,
+                    total_savings, profit_sacrifices, negotiation_dashboard,
+                    GameTheoryPricingEngine)
 
 
 def _efficiency():
@@ -199,16 +203,22 @@ def test_stage2_supplier_utilities_at_the_edges():
         assert abs(u - expected) < 1.0
 
 
-def test_stage2_nash_objective_guards_the_walls():
+def test_stage2_constraints_fence_the_bargaining_set():
     import numpy as np
     plan, budget = _bargaining_table()
     lo = plan["floor_price"].to_numpy()
     hi = plan["unit_cost"].to_numpy()
-    # infeasible: floors (a supplier utility is 0) and list (budget busted)
-    assert nash_objective(lo, plan, budget) == np.inf
-    assert nash_objective(hi, plan, budget) == np.inf
-    # feasible: just inside the wedge near the floors
-    assert np.isfinite(nash_objective(lo + 0.03 * (hi - lo), plan, budget))
+    bc = budget_constraint(plan, budget)
+    fcs = floor_constraints(plan)
+    # at list prices the budget is busted (constraint < 0), floors are slack
+    assert bc["fun"](hi) < 0
+    assert all(c["fun"](hi) > 0 for c in fcs)
+    # at floor prices the budget is satisfied, every floor binds (~0)
+    assert bc["fun"](lo) > 0
+    assert all(abs(c["fun"](lo)) < 50.0 for c in fcs)
+    # objective stays finite everywhere now (clipped), so SLSQP never sees NaN
+    assert np.isfinite(nash_objective(lo, plan, budget))
+    assert np.isfinite(nash_objective(hi, plan, budget))
 
 
 def test_stage2_nash_solution_splits_surplus_equally():
@@ -270,6 +280,53 @@ def test_stage2_budget_forces_a_gap():
         pass
 
 
+def test_stage2_savings_and_sacrifices_consistent():
+    plan, budget = _bargaining_table()
+    apc = baseline_apc(plan)
+    prices = solve_nash(plan, budget, bargaining_weights(plan))["prices"]
+    sav = total_savings(plan, prices, apc)
+    # negotiation lowers the bill, but not below the budget floor it cleared
+    assert 0 < sav["savings"] < apc
+    assert sav["negotiated_cost"] <= budget + 1.0
+    assert abs(sav["baseline_cost"] - sav["negotiated_cost"] - sav["savings"]) < 1.0
+    sac = profit_sacrifices(plan, prices)
+    for k, s in sac.items():
+        # nobody concedes past their floor: sacrifice stays under (1 - 0.40)
+        assert 0 <= s["sacrifice_pct"] <= 0.60 + 1e-6
+        assert s["negotiated_profit"] >= plan.set_index("supplier").loc[
+            k, "profit_floor"] - 1.0
+
+
+def test_stage2_dashboard_shape_and_columns():
+    plan, budget = _bargaining_table()
+    prices = solve_nash(plan, budget)["prices"]
+    df = negotiation_dashboard(plan, prices)
+    assert len(df) == len(plan)
+    for col in ("list_price", "nego_price", "price_drop_%", "sacrifice_%"):
+        assert col in df.columns
+    # negotiated price sits inside the bargaining range for every supplier
+    assert (df["nego_price"] <= df["list_price"] + 1e-6).all()
+    assert (df["price_drop_%"] >= -1e-6).all()
+
+
+def test_game_theory_engine_matches_functions():
+    # the packaged engine must reproduce the standalone-function result, and
+    # caching the stage-1 engine keeps it from refitting
+    e = _stage1_engine()
+    gt = GameTheoryPricingEngine(stage1_engine=e, power="volume")
+    sol = gt.solve()
+    assert sol["converged"]
+    plan, budget = gt.setup()["plan"], gt.setup()["budget"]
+    ref = solve_nash(plan, budget, bargaining_weights(plan))
+    for k in ref["prices"]:
+        assert abs(gt.equilibrium_prices()[k] - ref["prices"][k]) < 1e-3
+    # symmetric vs volume-weighted give genuinely different prices for S01
+    gt_sym = GameTheoryPricingEngine(stage1_engine=e, power="equal")
+    gt_sym.solve()
+    assert gt.equilibrium_prices()["S01"] != gt_sym.equilibrium_prices()["S01"]
+    assert isinstance(gt.dashboard(), pd.DataFrame)
+
+
 if __name__ == "__main__":
     tests = [
         test_dea_scores_in_unit_interval,
@@ -287,11 +344,14 @@ if __name__ == "__main__":
         test_stage2_floors_between_zero_and_baseline,
         test_stage2_buyer_utility_signs,
         test_stage2_supplier_utilities_at_the_edges,
-        test_stage2_nash_objective_guards_the_walls,
+        test_stage2_constraints_fence_the_bargaining_set,
         test_stage2_nash_solution_splits_surplus_equally,
         test_stage2_weighted_nash_splits_by_bargaining_power,
         test_disruption_service_rewards_diversification,
         test_stage2_budget_forces_a_gap,
+        test_stage2_savings_and_sacrifices_consistent,
+        test_stage2_dashboard_shape_and_columns,
+        test_game_theory_engine_matches_functions,
     ]
     for t in tests:
         t()

@@ -63,13 +63,15 @@ trade-off is invisible to a deterministic model, which is the whole point.
 **Stage 2: Nash bargaining over price** (`stage2.py`). Pulls q* from Stage 1,
 prices the no-negotiation baseline, sets the buyer's budget at 95% of it (so
 a negotiation is forced), gives every supplier a walk-away profit floor, and
-then solves the bargaining game with scipy: prices in [floor, list]
-maximising the Nash product of all utilities. Because the utilities are
-linear in price, the symmetric game has a closed-form answer (equal split of
-the surplus) that the optimiser is tested against; the interesting version
-is the *weighted* game, where bargaining power follows volume share — S01
-carries 83% of the demand and walks away with 83% of the supplier-side
-surplus.
+then solves the bargaining game with scipy (SLSQP, budget and floors as
+explicit constraints): prices in [floor, list] maximising the Nash product
+of all utilities. Because the utilities are linear in price, the symmetric
+game has a closed-form answer (equal split of the surplus) that the optimiser
+is tested against; the interesting version is the *weighted* game, where
+bargaining power follows volume share — S01 carries 83% of the demand and
+walks away with 83% of the supplier-side surplus. The whole step is wrapped
+in a `GameTheoryPricingEngine` that returns a before/after dashboard, the
+total savings ($222k, ~5%), and each supplier's profit sacrifice.
 
 **Fuzzy Cognitive Map** (`fcm.py`, `fcm_data.py`). A signed causal graph of
 resilience and sustainability enablers (blockchain traceability, supplier
@@ -141,7 +143,10 @@ regenerated if missing, which also invalidates the cache.
 - DEA is plain CCR (constant returns to scale), no super-efficiency variant.
 - Single-period, single-supplier deterministic disruption. Scenario-based or
   stochastic disruptions would be the natural next step.
-- Stage 2 stops at the setup; the Nash bargaining solution is future work.
+- The Stage-2 game uses transferable, risk-neutral utilities (linear in
+  price), which is what makes the symmetric solution an exact equal split.
+  Concave/risk-averse utilities would be a more realistic — and genuinely
+  non-linear — extension.
 
 ## What's next
 

@@ -154,6 +154,9 @@ def bargaining_weights(plan: pd.DataFrame, buyer_weight: float = 1.0) -> dict:
     return w
 
 
+_LOG_EPS = 1e-9  # clip utilities here so log stays finite during line search
+
+
 def nash_objective(price_vector: np.ndarray, plan: pd.DataFrame,
                    budget: float, weights: dict | None = None) -> float:
     """Negative log of the (weighted) Nash product, what scipy minimises.
@@ -165,10 +168,14 @@ def nash_objective(price_vector: np.ndarray, plan: pd.DataFrame,
     None means the symmetric game (all 1).
 
     Log form for two reasons: the raw product is around 1e21 here (five
-    utilities of 1e3-1e5 each), and log(u) -> -inf as any utility approaches
-    zero, so the optimiser gets pushed away from the walls of the bargaining
-    set without needing explicit constraints. Outside the set entirely (any
-    utility <= 0) it returns +inf.
+    utilities of 1e3-1e5 each), so taking it to the solver directly is
+    numerically hopeless; and the sum of logs turns the product into a sum,
+    which the constrained solver handles cleanly. Utilities are clipped at a
+    tiny positive epsilon, so if SLSQP's line search probes just outside the
+    bargaining set the log stays finite (a NaN there would stall the solve).
+    The optimum is strictly interior — every player keeps a positive share of
+    the surplus — so the clip never binds at the solution; the budget and
+    floor constraints, not this clip, are what hold the answer inside the set.
 
     `price_vector` follows the row order of `plan`. This is non-linear in
     the prices, which is why stage 2 needs scipy.optimize.minimize where
@@ -177,28 +184,64 @@ def nash_objective(price_vector: np.ndarray, plan: pd.DataFrame,
     prices = dict(zip(plan["supplier"], price_vector))
     u = {"buyer": buyer_utility(prices, plan, budget),
          **supplier_utilities(prices, plan)}
-    if min(u.values()) <= 0.0:
-        return np.inf
     if weights is None:
         weights = {k: 1.0 for k in u}
-    return -float(sum(weights[k] * np.log(u[k]) for k in u))
+    return -float(sum(weights[k] * np.log(max(u[k], _LOG_EPS)) for k in u))
+
+
+def budget_constraint(plan: pd.DataFrame, budget: float) -> dict:
+    """Step: the buyer's total negotiated cost must stay within B.
+
+        B - sum_k p_k * q_k* >= 0
+
+    Returned as a scipy inequality-constraint dict so SLSQP enforces it
+    directly, rather than leaning on the log barrier to keep cost under B.
+    """
+    q = plan["q_star"].to_numpy()
+    return {"type": "ineq", "fun": lambda x: budget - float(np.dot(x, q))}
+
+
+def floor_constraints(plan: pd.DataFrame) -> list[dict]:
+    """Step: every supplier's negotiated profit must clear its floor G_k.
+
+        (p_k - production_cost_k) * q_k* - G_k >= 0   for each k
+
+    One inequality-constraint dict per supplier. These coincide with the
+    lower price bounds (p_k >= floor_price_k), but stating them explicitly
+    mirrors the game's walk-away condition and guards against the bound's
+    4-decimal rounding letting a supplier dip a cent below its floor.
+    """
+    cons = []
+    for i, (_, r) in enumerate(plan.iterrows()):
+        prod, q, g = r["production_cost"], r["q_star"], r["profit_floor"]
+        cons.append({
+            "type": "ineq",
+            "fun": lambda x, i=i, prod=prod, q=q, g=g: (x[i] - prod) * q - g,
+        })
+    return cons
 
 
 def solve_nash(plan: pd.DataFrame, budget: float,
                weights: dict | None = None) -> dict:
-    """Solve the bargaining game: prices in [floor, list] maximising the
-    Nash product.
+    """Solve the bargaining game with constrained SLSQP.
+
+    Search space (step: price bounds): each price between the supplier's
+    walk-away price and its list asking price, [floor_price_k, unit_cost_k].
+    Constraints: the budget ceiling and every supplier's profit floor, as
+    explicit inequality dicts.
 
     Starts just inside the feasible wedge — the budget plane cuts the price
-    box very close to the floor side, so the box midpoint is NOT feasible
-    and a careless start hands the optimiser +inf.
+    box very close to the floor side, so the box midpoint is NOT feasible and
+    a careless start gives SLSQP an infeasible point to recover from.
     """
     lo = plan["floor_price"].to_numpy()
     hi = plan["unit_cost"].to_numpy()
     x0 = lo + 0.03 * (hi - lo)
+    constraints = [budget_constraint(plan, budget), *floor_constraints(plan)]
     res = minimize(nash_objective, x0, args=(plan, budget, weights),
-                   method="Nelder-Mead", bounds=list(zip(lo, hi)),
-                   options={"xatol": 1e-8, "fatol": 1e-12, "maxiter": 20000})
+                   method="SLSQP", bounds=list(zip(lo, hi)),
+                   constraints=constraints,
+                   options={"ftol": 1e-12, "maxiter": 1000})
     prices = dict(zip(plan["supplier"], res.x))
     return {
         "prices": {k: round(p, 4) for k, p in prices.items()},
@@ -235,6 +278,148 @@ def frame_bargaining_problem(engine=None, w1=0.6, w2=0.4,
         "bargaining_set_nonempty": cost_at_floors <= budget,
         "demand": engine.demand_dist,
     }
+
+
+def total_savings(plan: pd.DataFrame, prices: dict,
+                  baseline_apc: float) -> dict:
+    """Step: the money the negotiation actually saved the buyer.
+
+    Difference between the Stage-1 baseline cost (everyone at list price) and
+    the Stage-2 negotiated cost (everyone at c_k*). This is the buyer's prize
+    for running the game — distinct from U_B, which measures headroom against
+    the budget B rather than against the old list-price bill.
+    """
+    negotiated = float(sum(prices[k] * q for k, q
+                           in zip(plan["supplier"], plan["q_star"])))
+    return {
+        "baseline_cost": round(baseline_apc, 2),
+        "negotiated_cost": round(negotiated, 2),
+        "savings": round(baseline_apc - negotiated, 2),
+        "savings_pct": round((baseline_apc - negotiated) / baseline_apc, 4),
+    }
+
+
+def profit_sacrifices(plan: pd.DataFrame, prices: dict) -> dict:
+    """Step: how much profit each supplier gave up to secure the contract.
+
+    Per supplier: baseline profit SAP_k vs negotiated profit at c_k*, and the
+    sacrifice as a percentage of SAP_k. The floor caps this — a supplier can
+    never be pushed past giving up (1 - floor_factor) of its profit.
+    """
+    out = {}
+    for _, r in plan.iterrows():
+        k = r["supplier"]
+        negotiated_profit = (prices[k] - r["production_cost"]) * r["q_star"]
+        sap = r["baseline_profit"]
+        out[k] = {
+            "baseline_profit": round(sap, 2),
+            "negotiated_profit": round(negotiated_profit, 2),
+            "sacrifice": round(sap - negotiated_profit, 2),
+            "sacrifice_pct": round((sap - negotiated_profit) / sap, 4),
+        }
+    return out
+
+
+def negotiation_dashboard(plan: pd.DataFrame, prices: dict) -> pd.DataFrame:
+    """Step: the before/after table, one row per supplier.
+
+    Lays the list price next to the negotiated price, and the baseline profit
+    next to the negotiated profit, so the trade each supplier made is legible
+    at a glance.
+    """
+    sac = profit_sacrifices(plan, prices)
+    rows = []
+    for _, r in plan.iterrows():
+        k = r["supplier"]
+        rows.append({
+            "supplier": k,
+            "q_star": r["q_star"],
+            "list_price": r["unit_cost"],
+            "nego_price": round(prices[k], 4),
+            "price_drop_%": round(
+                100 * (r["unit_cost"] - prices[k]) / r["unit_cost"], 2),
+            "baseline_profit": sac[k]["baseline_profit"],
+            "nego_profit": sac[k]["negotiated_profit"],
+            "floor": r["profit_floor"],
+            "sacrifice_%": round(100 * sac[k]["sacrifice_pct"], 2),
+        })
+    return pd.DataFrame(rows)
+
+
+class GameTheoryPricingEngine:
+    """Stage 2 as one standalone, modular step in the pipeline.
+
+    Takes the Stage-1 allocation, frames the bargaining game, solves it, and
+    reports the outcome:
+
+        gt = GameTheoryPricingEngine(power="volume")
+        gt.solve()
+        df = gt.dashboard()          # before/after table
+        gt.savings()                 # buyer's prize vs the list-price bill
+        gt.sacrifices()              # what each supplier gave up
+
+    `power` picks the bargaining-power model: "volume" (weighted by share of
+    demand), "equal"/"symmetric" (all players weighted 1), or a ready-made
+    weights dict. Pass an already-run Stage-1 engine to reuse its cached
+    Prophet fit instead of refitting.
+    """
+
+    def __init__(self, stage1_engine=None, w1=0.6, w2=0.4,
+                 budget_factor=BUDGET_FACTOR, floor_factor=PROFIT_FLOOR_FACTOR,
+                 power="volume"):
+        self.stage1_engine = stage1_engine
+        self.w1, self.w2 = w1, w2
+        self.budget_factor = budget_factor
+        self.floor_factor = floor_factor
+        self.power = power
+        self.setup_ = None
+        self.solution_ = None
+
+    def setup(self) -> dict:
+        """Frame the game (ingest, baseline, budget, profits, floors). Cached."""
+        if self.setup_ is None:
+            self.setup_ = frame_bargaining_problem(
+                self.stage1_engine, self.w1, self.w2,
+                self.budget_factor, self.floor_factor)
+            self.stage1_engine = self.setup_["engine"]
+        return self.setup_
+
+    def _weights(self, plan: pd.DataFrame) -> dict | None:
+        if self.power in ("equal", "symmetric"):
+            return None
+        if self.power == "volume":
+            return bargaining_weights(plan)
+        if isinstance(self.power, dict):
+            return self.power
+        raise ValueError(f"unknown bargaining power model: {self.power!r}")
+
+    def solve(self) -> dict:
+        """Run the constrained Nash solve; returns the equilibrium prices."""
+        setup = self.setup()
+        if not setup["bargaining_set_nonempty"]:
+            raise ValueError("bargaining set is empty: no price clears every "
+                             "supplier's floor within the buyer's budget")
+        plan = setup["plan"]
+        self.solution_ = solve_nash(plan, setup["budget"], self._weights(plan))
+        return self.solution_
+
+    def equilibrium_prices(self) -> dict:
+        """The negotiated unit prices c_k* (solving first if needed)."""
+        if self.solution_ is None:
+            self.solve()
+        return self.solution_["prices"]
+
+    def savings(self) -> dict:
+        return total_savings(self.setup()["plan"], self.equilibrium_prices(),
+                             self.setup()["baseline_apc"])
+
+    def sacrifices(self) -> dict:
+        return profit_sacrifices(self.setup()["plan"],
+                                 self.equilibrium_prices())
+
+    def dashboard(self) -> pd.DataFrame:
+        return negotiation_dashboard(self.setup()["plan"],
+                                     self.equilibrium_prices())
 
 
 if __name__ == "__main__":
@@ -285,14 +470,15 @@ if __name__ == "__main__":
         print(f"  {k}  price ${sym['prices'][k]:.4f}  ->  "
               f"U ${sym['supplier_utilities'][k]:,.2f} above the floor")
 
-    # asymmetric: bargaining power by volume share. S01 carries 83% of D and
-    # negotiates like it; the buyer's weight matches the supplier side
-    # combined, so the buyer keeps half the surplus
-    w = bargaining_weights(plan)
-    asym = solve_nash(plan, budget, weights=w)
-    print(f"\nweighted Nash, power = volume share "
-          f"({asym['iterations']} iterations, converged={asym['converged']}):")
-    print(f"  buyer keeps ${asym['buyer_utility']:,.2f} under budget")
-    for k in plan["supplier"]:
-        print(f"  {k}  weight {w[k]:.3f}  price ${asym['prices'][k]:.4f}  ->  "
-              f"U ${asym['supplier_utilities'][k]:,.2f} above the floor")
+    # the packaged engine: weighted game (power = volume share) plus the
+    # before/after dashboard, savings and sacrifices in one place
+    gt = GameTheoryPricingEngine(stage1_engine=setup["engine"], power="volume")
+    sol = gt.solve()
+    print(f"\nweighted Nash via GameTheoryPricingEngine "
+          f"({sol['iterations']} iterations, converged={sol['converged']}):")
+    print(gt.dashboard().to_string(index=False))
+
+    sav = gt.savings()
+    print(f"\nlist-price bill ${sav['baseline_cost']:,.2f}  ->  "
+          f"negotiated ${sav['negotiated_cost']:,.2f}")
+    print(f"total savings  ${sav['savings']:,.2f}  ({sav['savings_pct']:.2%})")
