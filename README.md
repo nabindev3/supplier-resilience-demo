@@ -11,6 +11,27 @@ save?
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
+## The problem
+
+A buyer placing a year's order across several suppliers faces three coupled
+decisions where "cheapest" and "safest" pull in opposite directions:
+
+1. **Who supplies what, and how much** — pour everything into the cheapest
+   vendor, or spread the order across more efficient and reliable ones?
+2. **What is that spread actually worth** — diversification costs more up
+   front, but how much *service* does it save when a supplier fails *after*
+   orders are committed? A deterministic cost model never sees this trade-off.
+3. **What price to pay** — once quantities are fixed, the unit price is
+   negotiated, and each supplier has a point below which it walks away.
+
+This project answers all three on one forecast: demand is predicted (Prophet),
+suppliers are scored on cost *and* quality/reliability (DEA), quantities come
+from a multi-objective MILP, the plan is stress-tested against a post-commit
+disruption, and the price is settled with a Nash bargaining game. The result
+is a decision that **trades off cost, supplier quality, and disruption
+resilience explicitly** — instead of optimising cost alone and discovering the
+fragility too late.
+
 ## Background
 
 > Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). Supplier
