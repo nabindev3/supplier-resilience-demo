@@ -5,6 +5,7 @@ Map of resilience/sustainability enablers.
 Run:  streamlit run app.py
 """
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -47,7 +48,9 @@ severity = st.sidebar.slider(
 )
 disruption = {disrupted: severity} if disrupted != "(none)" else {}
 
-tab_alloc, tab_fcm = st.tabs(["Allocation & Resilience", "Causal Map (FCM)"])
+tab_alloc, tab_fcm, tab_nash = st.tabs(
+    ["Allocation & Resilience", "Causal Map (FCM)", "Nash Bargaining (Stage 2)"]
+)
 
 # tab 1: allocation -------------------------------------------------------
 with tab_alloc:
@@ -176,3 +179,149 @@ with tab_fcm:
         "learning algorithm tunes them. fcm.nhl_step() implements the Hebbian "
         "half of that."
     )
+
+
+# tab 3: Nash bargaining ---------------------------------------------------
+@st.cache_resource(show_spinner="Running Stage 1 (Prophet + MILP) once…")
+def _bargaining_setup():
+    """Frame the Stage-2 game once and cache it.
+
+    The Prophet fit and MILP allocation behind this are expensive, so they run
+    a single time; re-solving the Nash game at different bargaining powers
+    afterwards is just an SLSQP call.
+    """
+    from stage2 import GameTheoryPricingEngine
+
+    gt = GameTheoryPricingEngine(power="volume")
+    setup = gt.setup()
+    plan = setup["plan"]
+    return {
+        "plan": plan,
+        "budget": setup["budget"],
+        "baseline_apc": setup["baseline_apc"],
+        "surplus": round(setup["budget"] - setup["cost_at_floors"], 2),
+        "demand": setup["demand"]["D"],
+        "volume_share": dict(zip(plan["supplier"], plan["share_of_D"])),
+    }
+
+
+def _nash_weights(plan, power, buyer_weight):
+    """Bargaining powers with the supplier side normalised to sum to 1, so the
+    buyer slider reads directly as 'buyer power vs the whole supplier side'."""
+    if power == "Symmetric":
+        n = len(plan)
+        sup = {k: 1.0 / n for k in plan["supplier"]}
+    else:  # volume-weighted
+        total = float(plan["share_of_D"].sum())
+        sup = {k: float(s) / total for k, s in zip(plan["supplier"], plan["share_of_D"])}
+    return {"buyer": buyer_weight, **sup}
+
+
+with tab_nash:
+    st.subheader("Stage 2: the Nash bargaining game over price")
+    st.caption(
+        "Stage 1 fixed who supplies what; Stage 2 negotiates the unit price "
+        "with each selected supplier. Constrained SLSQP maximises the weighted "
+        "Nash product subject to the buyer's budget and every supplier's "
+        "walk-away floor. This tab is the live solver, not a mock-up."
+    )
+
+    try:
+        bs = _bargaining_setup()
+    except Exception as exc:  # pragma: no cover - depends on Prophet at runtime
+        st.error(
+            "Couldn't run the Stage-1 → Stage-2 pipeline in this environment "
+            f"({type(exc).__name__}: {exc}). It needs Prophet and the stage1/"
+            "stage2 modules."
+        )
+    else:
+        from stage2 import solve_nash, total_savings, negotiation_dashboard
+
+        plan, budget, surplus = bs["plan"], bs["budget"], bs["surplus"]
+        st.caption(
+            f"D = {bs['demand']:,.0f} units · {len(plan)} suppliers at the table · "
+            f"budget B = \\${budget:,.0f} · total surplus on the table = "
+            f"\\${surplus:,.0f}."
+        )
+
+        ca, cb = st.columns([1, 2])
+        power = ca.radio(
+            "Bargaining power", ["Volume-weighted", "Symmetric"],
+            help="Volume-weighted gives each supplier power equal to its share "
+                 "of demand (losing S01 is the buyer's real threat). Symmetric "
+                 "splits the supplier side evenly.",
+        )
+        buyer_weight = cb.slider(
+            "Buyer power (w_B, relative to the whole supplier side)",
+            0.1, 5.0, 1.0, 0.1,
+            help="1.0 means buyer and supplier side are evenly matched, so the "
+                 "buyer keeps half the surplus. Higher = the buyer extracts more.",
+        )
+
+        weights = _nash_weights(plan, power, buyer_weight)
+        sup_weights = {k: v for k, v in weights.items() if k != "buyer"}
+        w_sup_total = sum(sup_weights.values())  # normalised to 1
+
+        # The utilities are all linear in price, so U_B + sum(U_k) is a constant
+        # (the surplus). The whole N-dimensional price search collapses to one
+        # scalar: how to split that fixed pie. Sweep the buyer's share t and the
+        # weighted log-Nash objective traces a single concave hill — exactly the
+        # point SLSQP climbs to.
+        t = np.linspace(1e-3, 1 - 1e-3, 400)
+        obj = buyer_weight * np.log(t * surplus)
+        for k, wk in sup_weights.items():
+            obj = obj + wk * np.log((wk / w_sup_total) * (1.0 - t) * surplus)
+        t_star = buyer_weight / (buyer_weight + w_sup_total)
+
+        # the live solve, for the prices/savings the curve is the landscape of
+        sol = solve_nash(plan, budget, weights)
+        sav = total_savings(plan, sol["prices"], bs["baseline_apc"])
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(8, 4.2))
+        ax.plot(t * 100, obj, color="#1f77b4", linewidth=2)
+        ax.axvline(t_star * 100, color="#d62728", linestyle="--", linewidth=1.3)
+        ax.plot([t_star * 100], [obj.max()], "o", color="#d62728", markersize=9)
+        ax.annotate(
+            f"optimum: buyer keeps {t_star:.0%}\n(U_B = \\${t_star * surplus:,.0f})",
+            (t_star * 100, obj.max()), textcoords="offset points",
+            xytext=(12, -28), fontsize=9, color="#d62728",
+        )
+        ax.set_xlabel("buyer's share of the surplus  (%)")
+        ax.set_ylabel("weighted Nash objective\n$w_B\\,\\log U_B + \\sum w_k\\,\\log U_k$")
+        ax.set_title("The pie-split SLSQP is really solving (single concave optimum)")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.caption(
+            "Concave with one peak — because $-(w_B\\log U_B + \\sum w_k\\log U_k)$ "
+            "is convex (a sum of negative-logs of linear functions), so SLSQP "
+            "can't land in a local optimum. The log form also tames the raw "
+            "Nash product, which is ~$10^{21}$ at this scale and would swamp the "
+            "solver's finite-difference gradients."
+        )
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Buyer keeps (U_B)", f"${sol['buyer_utility']:,.0f}",
+                  help="Headroom under budget B after the negotiated deal.")
+        m2.metric("List-price bill → negotiated",
+                  f"${sav['negotiated_cost']:,.0f}",
+                  delta=f"-${sav['savings']:,.0f}", delta_color="inverse")
+        m3.metric("Buyer's savings", f"{sav['savings_pct']:.1%}",
+                  help="Versus the Stage-1 list-price cost — the buyer's prize "
+                       "for running the game.")
+
+        st.markdown("#### Before/after: what each supplier conceded")
+        dash = negotiation_dashboard(plan, sol["prices"])
+        st.dataframe(dash, hide_index=True, width="stretch")
+        st.caption(
+            f"Solver: SLSQP, converged={sol['converged']} in {sol['iterations']} "
+            "iterations. Each negotiated price sits between the supplier's "
+            "walk-away floor and its list asking price; no supplier is pushed "
+            "past giving up its floor share of profit."
+        )
