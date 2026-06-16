@@ -46,11 +46,19 @@ keeps the recognisable Stage-1 structure and fills in both gaps.
 
 ## What's here
 
-**Forecast driven Stage 1** (`demand_data.py`, `forecast.py`, `stage1.py`).
-Instead of taking demand as given, I synthesise 5 years of daily demand
-(growth trend, weekly and yearly seasonality, noise), fit Prophet on it, and
-feed the annual forecast D into a MILP that picks suppliers and quantities.
-Two objectives, combined with the weighted global criterion method:
+**Forecast driven Stage 1** (`online_retail.py`, `forecast.py`, `stage1.py`).
+Instead of taking demand as given, I fit Prophet on a **real** demand series —
+the total daily order volume of a UK online retailer (UCI Online Retail II,
+Dec 2009–Dec 2011, ~6.2M units/year) — and feed the annual forecast D into a
+MILP that picks suppliers and quantities. (`demand_data.py` keeps a synthetic
+generator as an offline fallback.) A note on what real data costs you: I first
+tried forecasting a single consistently-ordered product to keep a literal
+"one item" reading, but single-product retail demand is far too spiky —
+Prophet returned a negative point estimate or a band ±5× the mean. The total
+volume averages that noise out and has a clean multiplicative holiday swing
+Prophet fits to within ~1% of the historical mean, so the buyer's problem
+becomes sourcing the retailer's aggregate volume. Two objectives, combined
+with the weighted global criterion method:
 
 - Z1: total annual cost (purchasing + holding + setup)
 - Z2: sum of DEA efficiency scores of the selected suppliers
@@ -89,10 +97,11 @@ explicit constraints): prices in [floor, list] maximising the Nash product
 of all utilities. Because the utilities are linear in price, the symmetric
 game has a closed-form answer (equal split of the surplus) that the optimiser
 is tested against; the interesting version is the *weighted* game, where
-bargaining power follows volume share, S01 carries 83% of the demand and
-walks away with 83% of the supplier-side surplus. The whole step is wrapped
+bargaining power follows volume share, S01 carries 85% of the demand and
+walks away with 85% of the supplier-side surplus. The whole step is wrapped
 in a `GameTheoryPricingEngine` that returns a before/after dashboard, the
-total savings ($222k, ~5%), and each supplier's profit sacrifice.
+total savings ($2.6M, ~5.2% off a $50M list-price bill), and each supplier's
+profit sacrifice.
 
 **Fuzzy Cognitive Map** (`fcm.py`, `fcm_data.py`). A signed causal graph of
 resilience and sustainability enablers (blockchain traceability, supplier
@@ -105,10 +114,10 @@ learned, and the NHL step is one rule out of their full hybrid algorithm.
 ## How the pieces fit
 
 ```
-demand_data.py ──► forecast.py ──► D ± interval ──┐
-                                                  ├──► stage1.py ──► q*, selected ──► stage2.py
-suppliers_config.py ──► dea.py ──► efficiency ────┘         │
-                                                            └──► pareto_frontier.png
+online_retail.py ──► demand_history.csv ──► forecast.py ──► D ± interval ──┐
+   (UCI real data)   (demand_data.py = fallback)                           ├──► stage1.py ──► q*, selected ──► stage2.py
+suppliers_config.py ──► dea.py ──► efficiency ─────────────────────────────┘         │
+                                                                                     └──► pareto_frontier.png
 
 data.py ──► dea.py + allocation.py ──► app.py (interactive demo, 6-supplier case)
 fcm_data.py ──► fcm.py ──────────────► app.py (causal map tab)
@@ -117,7 +126,7 @@ fcm_data.py ──► fcm.py ──────────────► app.p
 The two paths share `dea.py` and the same modelling ideas but different
 supplier pools: the Streamlit demo keeps the small 6 supplier case so every
 number is checkable by hand, the stage-1/2 pipeline uses the 10 supplier
-pool and forecasted demand.
+pool and the real forecasted demand.
 
 The reasoning behind the less obvious modelling choices (why range
 normalisation, why capacity is not a DEA output, why the budget sits at 95%)
@@ -130,22 +139,27 @@ git clone https://github.com/nabindev3/supplier-resilience-demo.git
 cd supplier-resilience-demo
 pip install -r requirements.txt
 
-streamlit run app.py     # interactive demo (6-supplier model + FCM)
+streamlit run app.py     # interactive demo (allocation + FCM + Nash tab)
+python online_retail.py  # (re)build demand_history.csv from the UCI dataset
 python stage1.py         # forecast + DEA + weight sweep + pareto_frontier.png
 python stage2.py         # bargaining-game setup on top of stage 1
 python test_model.py     # smoke tests
 ```
 
-The first run fits Prophet on the synthetic history; the result is cached in
-`.annual_demand_cache.json` (keyed on a hash of the data), so subsequent runs
-of stage1.py and stage2.py are near-instant. `demand_history.csv` is
-regenerated if missing, which also invalidates the cache.
+The real `demand_history.csv` is committed, so nothing needs downloading to
+run the pipeline. `python online_retail.py` regenerates it from the UCI
+dataset (fetching the ~44MB workbook into `data_raw/` on first call); pass a
+StockCode to inspect a single product instead of the total. The first forecast
+fits Prophet and caches the result in `.annual_demand_cache.json` (keyed on a
+hash of the data), so later runs of stage1.py/stage2.py are near-instant;
+editing the CSV invalidates the cache automatically.
 
 ## Files
 
 | File | What it does |
 |------|--------------|
-| `demand_data.py` | synthetic 5-year daily demand history |
+| `online_retail.py` | builds `demand_history.csv` from the real UCI Online Retail II data |
+| `demand_data.py` | synthetic 5-year daily demand history (offline fallback) |
 | `forecast.py` | Prophet fit, annual demand D with 90% interval |
 | `suppliers_config.py` | 10-supplier candidate pool for stage 1 |
 | `stage1.py` | DEA + multi-objective MILP, weight sweep, Pareto + resilience plots |
@@ -159,8 +173,14 @@ regenerated if missing, which also invalidates the cache.
 
 ## Limitations
 
-- All data is synthetic. The Prophet model is fit on a series I generated, so
-  it demonstrates the pipeline rather than predicting anything real.
+- Demand is real (UCI Online Retail II), but the **supplier** data is not.
+  Real procurement data — unit cost, and especially each supplier's
+  *production cost*, the number the Nash game bargains over — is commercially
+  confidential and essentially never public, so the 10-supplier pool stays a
+  calibrated assumption. Its scale-dependent fields (capacity, min order,
+  setup cost) were scaled to match the real ~6.2M-unit demand; the per-unit
+  economics are illustrative, with margins set on a deliberate gradient (see
+  [docs/decisions.md](docs/decisions.md)).
 - DEA is plain CCR (constant returns to scale), no super-efficiency variant.
 - Single-period, single supplier deterministic disruption. Scenario-based or
   stochastic disruptions would be the natural next step.
@@ -173,8 +193,10 @@ regenerated if missing, which also invalidates the cache.
 
 Roughly in order:
 
-1. Replace the synthetic series with a public demand dataset (M5 or similar)
-   to see whether the pipeline survives contact with real data.
+1. ~~Replace the synthetic series with a public demand dataset.~~ **Done** —
+   the pipeline now forecasts UCI Online Retail II. The next step is sourcing
+   real *supplier* attributes (the harder half), or at least calibrating the
+   pool's per-unit economics against a published supplier-selection case study.
 2. Try other bargaining-power definitions in the weighted Nash game (DEA
    efficiency, switching cost) and see how the negotiated prices move.
 3. Multi-supplier and partial disruption scenarios for the resilience sweep,
@@ -195,6 +217,14 @@ performance. *International Journal of Production Economics, 246*, 108429.
 Yousefi, S., & Mohamadpour Tosarkani, B. (2024). Enhancing sustainable supply
 chain readiness to adopt blockchain: A decision support approach for barriers
 analysis. *Engineering Applications of Artificial Intelligence.*
+
+## Data
+
+Demand is derived from the **Online Retail II** dataset (Chen, D., 2019; UCI
+Machine Learning Repository, [doi:10.24432/C5CG6D](https://doi.org/10.24432/C5CG6D)),
+licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The
+committed `demand_history.csv` is the retailer's total daily order volume
+aggregated from that dataset; `online_retail.py` regenerates it.
 
 ## License
 

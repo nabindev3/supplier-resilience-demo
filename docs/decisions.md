@@ -8,7 +8,7 @@ The 2021 paper takes annual demand D as a given constant. That's the first
 thing I wanted to change: in practice D comes from somewhere, and the
 uncertainty around it matters for how much capacity you want in reserve.
 Prophet over SARIMA-type models because it handles missing days natively (the
-synthetic history has holes on purpose), multiplicative seasonality is a
+real series has systematic gaps — see below), multiplicative seasonality is a
 one-flag switch, and the prediction interval comes for free — that interval
 is what D_lower/D_upper in `forecast.annual_demand()` carry forward.
 
@@ -67,9 +67,9 @@ relies on this: it reports realised service level after a supplier fails.
 
 Stage 2 needs a reason for anyone to negotiate. Setting B below the
 list-price purchasing cost makes the status quo unaffordable by
-construction; the gap (about $215k at the default weights) is the concession
-the bargaining game has to extract. The 0.95 is arbitrary and adjustable —
-the point is only that it's strictly below 1.
+construction; the gap (about $2.5M at the default weights, on a ~$50M
+list-price bill) is the concession the bargaining game has to extract. The
+0.95 is arbitrary and adjustable — the point is only that it's strictly below 1.
 
 ## Supplier margins widen toward the premium end
 
@@ -89,9 +89,9 @@ than absolute so the floors scale with how much each supplier has at stake.
 The 0.40 isn't free: the buyer must be able to afford every supplier sitting
 at their floor price, and with the budget at 95% of list cost that breaks
 just above factor ≈ 0.44 — the floor prices alone exceed B and the
-bargaining set goes empty. At 0.40 there's about $15k of genuinely
+bargaining set goes empty. At 0.40 there's about $177k of genuinely
 negotiable surplus between "everyone at their floor" and the budget, which
-is tight enough to be interesting. The two knobs (budget factor, floor
+against the $2.5M concession the budget demands is tight enough to be interesting. The two knobs (budget factor, floor
 factor) trade off against each other; `frame_bargaining_problem()` reports
 `bargaining_set_nonempty` so a bad combination is caught immediately.
 
@@ -117,21 +117,52 @@ clip never binds at the solution — it's purely a guard.
 
 Two facts worth remembering. First, the midpoint of the price box is *not*
 a feasible start: the budget plane cuts the box very close to the floor
-side (gap $215k vs $15k of surplus), so the search starts near the floors.
+side (gap $2.5M vs $177k of surplus), so the search starts near the floors.
 Second, because all utilities are linear in prices, U_B + Σ U_k is constant
 (= B − cost at floors), which means the symmetric Nash solution is known in
 closed form — an equal split of the surplus among the n+1 players. That's
-the strongest test in the suite: the solve has to land on $3,090.30 for
-every player, and it does. The symmetric game's answer doesn't depend on
+the strongest test in the suite: the solve has to land on an equal
+$35,411.97 for every player, and it does. The symmetric game's answer doesn't depend on
 q*, DEA scores or anything else, which makes it a validation tool rather
 than a result — the *weighted* game is the real one. Bargaining power
-follows volume share (losing 83% of your supply is a bigger threat than
+follows volume share (losing 85% of your supply is a bigger threat than
 losing 3%), and the same closed-form logic still checks it: with fixed
 surplus the weighted solution gives each player surplus · a_i / Σa, which
 the optimiser reproduces to the cent.
 
-## Synthetic data left imperfect
+## Real demand: total volume, not a single product
 
-`demand_data.py` drops ~1% of days at random plus a ~10-day hole. Partly
-realism, partly a guard: anything downstream that silently assumes a gapless
-daily series should break in development, not later.
+Demand started synthetic (a smooth trend×weekly×yearly series in
+`demand_data.py`). Swapping in real data — UCI Online Retail II, a UK online
+retailer, Dec 2009–Dec 2011 — turned up a lesson worth recording.
+
+The faithful mapping to "a buyer procuring one item" is to forecast one
+product, so I tried it: product 21212, sold on 98% of trading days. Prophet
+still couldn't forecast it — single-product retail demand is too spiky (bulk
+B2B orders spike the series to 10× the mean), and the annual estimate came
+back either negative or with a 90% band ±5× the point. Two other products and
+a cake-case family were no better. The retailer's **total** daily volume, by
+contrast, forecasts cleanly: aggregating thousands of SKUs averages the noise
+out (law of large numbers), the holiday swing is a clean multiplicative
+pattern, and Prophet lands within ~1% of the historical mean with the only
+prediction interval that stays positive throughout. So the demo forecasts the
+total (~6.2M units/year) and the buyer's problem is sourcing that aggregate.
+`online_retail.py` can still build a single-product series for inspection.
+
+The series has real, *systematic* gaps: the retailer never trades on
+Saturdays, so ~135 of 739 calendar days are missing. That's exactly the
+missing-day case Prophet handles natively — and the reason the old synthetic
+generator deliberately punched holes in its series, so anything downstream
+that assumed a gapless daily series would break in development, not later.
+
+## Supplier pool scaled to the real demand, ratios untouched
+
+Real demand is ~6.2M units/year, about 12× the old synthetic ~528k. The
+supplier pool's three scale-dependent fields — capacity, min order, setup
+cost — were multiplied by 12 to match (`suppliers_config.py`). Multiplying all
+three by the same factor keeps every ratio identical, so the cost/efficiency
+trade-offs, the diversification levers and the bargaining game all behave
+exactly as before — only the magnitude is now real. The per-unit economics
+(unit cost, production cost, margins, quality, defect, lead time) were left
+as set: real supplier production costs are commercially confidential and not
+public, so those stay a documented assumption rather than a fake "real" number.

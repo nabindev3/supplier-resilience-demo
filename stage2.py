@@ -142,7 +142,7 @@ def bargaining_weights(plan: pd.DataFrame, buyer_weight: float = 1.0) -> dict:
 
     The buyer is one side of every deal and gets `buyer_weight`; the
     suppliers split a combined 1.0 in proportion to the volume they carry.
-    Volume share is the most defensible proxy here: losing S01 (83% of D)
+    Volume share is the most defensible proxy here: losing S01 (85% of D)
     hurts the buyer far more than losing S03 (3%), and that threat is
     exactly what bargaining power is. Swap in DEA scores or anything else —
     the solver doesn't care, only the proportional split does.

@@ -1,9 +1,10 @@
 """Prophet demand forecasting.
 
 The 2021 model takes demand as a given constant; here it comes from a
-forecast instead. Fit Prophet on the 5-year synthetic history, project a
-horizon, and reduce the forecast to the demand numbers the allocation model
-needs (point estimate plus the prediction-interval band for uncertainty).
+forecast instead. Fit Prophet on the real demand history (UCI Online Retail II
+total volume; see online_retail.py), project a horizon, and reduce the forecast
+to the demand numbers the allocation model needs (point estimate plus the
+prediction-interval band for uncertainty).
 """
 
 import hashlib
@@ -29,8 +30,9 @@ CACHE_PATH = ".annual_demand_cache.json"
 
 
 def build_model() -> Prophet:
-    # multiplicative seasonality because the synthetic history is built that
-    # way (and real order volumes usually scale with the trend too)
+    # multiplicative seasonality: the real total-volume series has a holiday
+    # swing that scales with the level, which is exactly why it forecasts
+    # cleanly where a single spiky product did not (see docs/decisions.md)
     return Prophet(
         growth="linear",
         yearly_seasonality=True,

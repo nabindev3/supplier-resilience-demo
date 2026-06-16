@@ -1,4 +1,11 @@
-"""Synthetic daily demand history for the forecasting stage.
+"""Synthetic daily demand history — the offline fallback for the forecasting
+stage.
+
+The pipeline now forecasts a *real* series by default (UCI Online Retail II
+total volume; see online_retail.py), committed as demand_history.csv. This
+module is the fallback: it regenerates a synthetic 5-year history if that CSV
+is missing and the real data can't be built (no network, or the raw download
+isn't present).
 
 Five years of daily demand built as trend * weekly * yearly * noise.
 Multiplicative on purpose: real order volumes swing more as the business
@@ -59,10 +66,20 @@ def save_demand_history(path=CSV_PATH, **kwargs) -> pd.DataFrame:
 
 
 def load_demand_history(path=CSV_PATH) -> pd.DataFrame:
-    """Load the saved history, regenerating it if the CSV isn't there."""
+    """Load the demand history Prophet fits on.
+
+    Order of preference: the committed CSV (the real UCI series) if present;
+    otherwise rebuild it from the real dataset via online_retail.py; and only
+    if that fails (no network / raw file), fall back to the synthetic series.
+    """
     try:
         return pd.read_csv(path, parse_dates=["ds"])
     except FileNotFoundError:
+        pass
+    try:
+        from online_retail import build_demand_history
+        return build_demand_history(path=path)
+    except Exception:
         return save_demand_history(path)
 
 

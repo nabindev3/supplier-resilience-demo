@@ -92,10 +92,12 @@ def test_nhl_preserves_structure_and_bounds():
 
 
 def _stage1_engine():
-    # bypass the Prophet fit with a fixed annual demand
+    # bypass the Prophet fit with a fixed annual demand, at the real-data
+    # scale (UCI Online Retail II total volume is ~6.2M units/year)
     e = DemandOptimizationEngine()
-    e.demand_dist = {"D": 500_000.0, "D_lower": 450_000.0, "D_upper": 550_000.0,
-                     "mean_daily": 1369.9, "horizon_days": 365}
+    e.demand_dist = {"D": 6_000_000.0, "D_lower": 600_000.0,
+                     "D_upper": 11_500_000.0, "mean_daily": 16_438.0,
+                     "horizon_days": 365}
     return e
 
 
@@ -103,7 +105,7 @@ def test_stage1_meets_demand_exactly():
     e = _stage1_engine()
     r = e.run(w1=1.0, w2=0.0)
     assert r["status"] == "Optimal"
-    assert abs(sum(r["allocation"].values()) - 500_000.0) < 1.0
+    assert abs(sum(r["allocation"].values()) - 6_000_000.0) < 1.0
 
 
 def test_stage1_weights_actually_trade_off():
@@ -238,7 +240,7 @@ def test_stage2_nash_solution_splits_surplus_equally():
 def test_stage2_weighted_nash_splits_by_bargaining_power():
     # weighted version of the same closed form: with fixed total surplus the
     # weighted Nash solution gives each player surplus * a_i / sum(a), so
-    # S01 (83% of the volume) must walk away with most of the supplier side
+    # S01 (~85% of the volume) must walk away with most of the supplier side
     plan, budget = _bargaining_table()
     w = bargaining_weights(plan)
     sol = solve_nash(plan, budget, weights=w)
