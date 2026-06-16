@@ -1,6 +1,6 @@
 # Supplier selection, order allocation & disruption resilience
 
-A working reimplementation of the supplier-selection core from Yousefi,
+A working reimplementation of the supplier selection core from Yousefi,
 Jahangoshai Rezaee & Solimanpur (2021), extended with the question their
 deterministic model can't answer: when a supplier fails *after* orders are
 committed, how much does diversification cost, and how much service does it
@@ -16,20 +16,20 @@ save?
 A buyer placing a year's order across several suppliers faces three coupled
 decisions where "cheapest" and "safest" pull in opposite directions:
 
-1. **Who supplies what, and how much** — pour everything into the cheapest
+1. **Who supplies what, and how much?** pour everything into the cheapest
    vendor, or spread the order across more efficient and reliable ones?
-2. **What is that spread actually worth** — diversification costs more up
+2. **What is that spread actually worth?** diversification costs more up
    front, but how much *service* does it save when a supplier fails *after*
-   orders are committed? A deterministic cost model never sees this trade-off.
-3. **What price to pay** — once quantities are fixed, the unit price is
+   orders are committed? A deterministic cost model never sees this trade off.
+3. **What price to pay?** once quantities are fixed, the unit price is
    negotiated, and each supplier has a point below which it walks away.
 
 This project answers all three on one forecast: demand is predicted (Prophet),
 suppliers are scored on cost *and* quality/reliability (DEA), quantities come
-from a multi-objective MILP, the plan is stress-tested against a post-commit
+from a multi-objective MILP, the plan is stress tested against a post commit
 disruption, and the price is settled with a Nash bargaining game. The result
 is a decision that **trades off cost, supplier quality, and disruption
-resilience explicitly** — instead of optimising cost alone and discovering the
+resilience explicitly**, instead of optimising cost alone and discovering the
 fragility too late.
 
 ## Background
@@ -49,11 +49,11 @@ keeps the recognisable Stage-1 structure and fills in both gaps.
 **Forecast driven Stage 1** (`online_retail.py`, `forecast.py`, `stage1.py`).
 Instead of taking demand as given, I fit Prophet on a **real** demand series —
 the total daily order volume of a UK online retailer (UCI Online Retail II,
-Dec 2009–Dec 2011, ~6.2M units/year) — and feed the annual forecast D into a
+Dec 2009–Dec 2011, ~6.2M units/year) and feed the annual forecast D into a
 MILP that picks suppliers and quantities. (`demand_data.py` keeps a synthetic
 generator as an offline fallback.) A note on what real data costs you: I first
-tried forecasting a single consistently-ordered product to keep a literal
-"one item" reading, but single-product retail demand is far too spiky —
+tried forecasting a single consistently ordered product to keep a literal
+"one item" reading, but single product retail demand is far too spiky
 Prophet returned a negative point estimate or a band ±5× the mean. The total
 volume averages that noise out and has a clean multiplicative holiday swing
 Prophet fits to within ~1% of the historical mean, so the buyer's problem
@@ -174,8 +174,8 @@ editing the CSV invalidates the cache automatically.
 ## Limitations
 
 - Demand is real (UCI Online Retail II), but the **supplier** data is not.
-  Real procurement data — unit cost, and especially each supplier's
-  *production cost*, the number the Nash game bargains over — is commercially
+  Real procurement data unit cost, and especially each supplier's
+  *production cost*, the number the Nash game bargains over is commercially
   confidential and essentially never public, so the 10-supplier pool stays a
   calibrated assumption. Its scale-dependent fields (capacity, min order,
   setup cost) were scaled to match the real ~6.2M-unit demand; the per-unit
@@ -187,7 +187,7 @@ editing the CSV invalidates the cache automatically.
 - The Stage-2 game uses transferable, risk-neutral utilities (linear in
   price), which is what makes the symmetric solution an exact equal split.
   Concave/risk-averse utilities would be a more realistic and genuinely
-  non-linear — extension.
+  non-linear extension.
 
 ## What's next
 
