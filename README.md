@@ -32,6 +32,35 @@ is a decision that **trades off cost, supplier quality, and disruption
 resilience explicitly**, instead of optimising cost alone and discovering the
 fragility too late.
 
+## Pipeline at a glance
+
+<p align="center">
+  <img src="docs/pipeline_overview.svg" alt="Top-down pipeline: a supplier pool and demand history feed DEA scoring and a Prophet forecast, which feed Stage 1 order allocation; Stage 1 feeds both a Stage 2 Nash pricing game and a resilience stress test, producing the final plan." width="640">
+</p>
+
+The whole thing is **built around the two-stage hybrid model** of Yousefi et al.
+(2021), the purple core in the diagram:
+
+- **Stage 1 · allocation** decides *who supplies how much*, using a
+  multi-objective MILP that balances cost against supplier efficiency.
+- **Stage 2 · pricing** then settles *what price to pay* for those quantities
+  through a Nash bargaining game.
+
+Everything else is scaffolding around that core, colour-coded by where it comes
+from. The **beige inputs** prepare what the two stages need: a **supplier pool**
+(costs, quality, capacity) scored by **DEA** into efficiency-per-dollar, and a
+**demand history** (real UCI data, or the synthetic fallback) that the
+**Prophet forecast** turns into an annual demand figure with an uncertainty range.
+The **orange resilience test** is the half this project adds on top of the
+paper: it knocks out a supplier *after* Stage 1 has committed the orders and
+measures the service that survives, which is the trade off a deterministic model
+never sees. Read top to bottom, data flows from the two inputs down through
+scoring/forecasting, into Stage 1, and out through Stage 2 and the stress test
+to a **final plan** of quantities and prices.
+
+(For the file-level version of this same flow, showing which module produces
+what, see [How the pieces fit](#how-the-pieces-fit) below.)
+
 ## Background
 
 > Yousefi, S., Jahangoshai Rezaee, M., & Solimanpur, M. (2021). Supplier
