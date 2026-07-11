@@ -269,7 +269,7 @@ with tab_nash:
         # point SLSQP climbs to.
         t = np.linspace(1e-3, 1 - 1e-3, 400)
         obj = buyer_weight * np.log(t * surplus)
-        for k, wk in sup_weights.items():
+        for wk in sup_weights.values():
             obj = obj + wk * np.log((wk / w_sup_total) * (1.0 - t) * surplus)
         t_star = buyer_weight / (buyer_weight + w_sup_total)
 
